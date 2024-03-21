@@ -5,3 +5,7 @@
 
 # For Analysis File/s: 
 1. LUDB Analysis
+
+Loading Models: 
+library(keras)
+model <- load_model_tf("saved_model/model_lstm2")
