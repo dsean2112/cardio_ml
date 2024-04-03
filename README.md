@@ -18,12 +18,18 @@ model <- load_model_tf("saved_model/model_lstm2")
 ## List:  
 model_lstm1: created using unfiltered data  
 lstm_bp1: created using a bandpass filter (cut-offs of 0.5 - 40 hz)  
+lstm_i, ii, iii etc: created using unfiltered data, for all 12 leads  
+
+# Data:
+samples12: 170 samples for all 12 leads. mV values.  
+annotations12: 170 samples for all 12 leads. Annotations: 0 = 0, P = 1, QRS = 2, T = 3  
+train_rows_12: Rows of samples12/annotations12 used to train the lstm_i, ii etc. Can use this to isolate testing samples  
+
+samples_bp12: 170 samples for all 12 leads. mV values. Filtered through bandpass Butterworth filter, exclude <5 Hz, >40 Hz
+
+LUDB_samples.RData: Variable name "samples" in R. Raw Samples of lead i only. 170 samples, 5000 time points. 
+Third dimension:  
+Value 1: mV values  
+Value 2: annotation values: 0 = 0, P = 1, QRS = 2, T = 3  
 
 # Misc
-LUDB_samples.RData:  
-Variable name "samples" in R. Raw Samples.  
-First dimension: sample number (1-170).  
-Second dimension: individual values over time (1-5000)  
-Third dimension:  
-   Value 1: mV values  
-   Value 2: annotation values: 0 = 0, P = 1, QRS = 2, T = 3  
