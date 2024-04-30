@@ -1,3 +1,4 @@
+# Train ---------------------------------------------------------------
 library(keras)
 library(caret)
 
@@ -10,7 +11,7 @@ model_name <- "spectro_i"
 
 leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
 
-# for (lead in range) {
+for (lead in range) {
   model <- load_model_tf(paste0("saved_model/",model_name))
   
   
@@ -31,7 +32,6 @@ leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
   predictions_integer <- predictions_integer - 1
   
   
-  # Confusion Tables --------------------------------------------------------
   levels <- c(0,1,2,3) # number of value types must be the same when factoring
   
   confusion_matrix <- confusionMatrix(data = factor(predictions_integer, levels = levels), reference = factor(annotations12[test_rows,,lead], levels = levels))
@@ -52,4 +52,19 @@ leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
   # for (i in 1:4) {
   #   confusion_by_sample_condensed[,i] <- confusion_table_by_sample[,i,i]
   # }
-# }
+}
+
+
+# Plots -------------------------------------------------------------------
+library(ggpubr)
+sample_num <- 17
+lead <- 1
+
+predict_plot <- plot_func(y = samples_bp12[test_rows[sample_num],,lead], color = predictions_integer[sample_num,])
+actual_plot <- plot_func(y = samples_bp12[test_rows[sample_num],,lead], color = annotations12[test_rows[sample_num],,lead])
+
+tf <- annotations12[test_rows[sample_num],,lead] == predictions_integer[sample_num,]
+tf_plot <- plot_func(y = samples_bp12[test_rows[sample_num],,lead], color = tf)
+
+# library(ggpubr)
+ggarrange(predict_plot, actual_plot, tf_plot, nrow = 3, ncol = 1)

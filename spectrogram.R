@@ -27,13 +27,17 @@ for (i in 1:dim[1]) {
 # Spectrogram -------------------------------------------------------------
 library(signal)
 
-input <- samples_bp_full12
+input <- samples_full12
 nam <- "samples_filt_spec_i" # samples_spec_i
+lead <- "i"
+
+lead_list <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
+lead_index <- which(lead_list == lead)
 
 output <- array(0, c(170,5000,24))
 
 for (i in 1:dim(output)[[1]]) {
-a <- specgram(c(array(0, 64), input[i,,1], array(0, 64)), n = 128, Fs = 500, overlap = 127)
+a <- specgram(c(array(0, 64), input[i,,lead_index], array(0, 64)), n = 128, Fs = 500, overlap = 127)
 
 # a$f <- a$f[a$f < 45]
 index = length(a[a$f < 45])

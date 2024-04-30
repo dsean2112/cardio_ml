@@ -1,0 +1,11 @@
+Models:
+
+spectrogram_models:  
+spectro_i, spectro_ii, spectro_v6: trained on unfiltered spectrogram data
+spectro_bilstm_i: trained on unfiltered spectrogram data, with bidirectional LSTM layers
+
+standard_models: trained on unfiltered signal (1 dimensional) data
+
+bandpasss_data_models: trained on filtered signal (1 dimensional) (not as specific/sensitive)
+
+old models: ignore

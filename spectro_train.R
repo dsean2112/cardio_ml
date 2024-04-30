@@ -1,6 +1,24 @@
-  output_name <- "spectro_i"
-  input_data <- samples_spec_i[train_rows,,]
-  labeled_data <- annotations12[train_rows,,1]
+
+output_name <- "spectro_ii"
+lead_name <- "ii"
+input_data <- samples_spec_ii[train_rows, , ]
+
+
+lead_list <-
+  c("i",
+    "ii",
+    "iii",
+    "avr",
+    "avl",
+    "avf",
+    "v1",
+    "v2",
+    "v3",
+    "v4",
+    "v5",
+    "v6")
+lead_index <- which(lead_list == lead_name)
+labeled_data <- annotations12[train_rows, , lead_index]
   
   #**Handle split prior to function to train all 12 leads consistently 
   # Therefore, all input_data is used for training

@@ -1,7 +1,24 @@
-# File Sequence for Training: 
-1. load LUDB_samples
-2. Run NN_band_pass if desired
-3. Run NN_train_script
+# File Sequence for Spectrogram Training:  
+1. load samples_full12, train_rows_12  
+2. Run spectrogram  
+3. Run spectro_train  
+   For bidirectional training, use "bilstm_spectro_train"  
+  
+# Files for Spectrogram Analysis  
+1. Run spectro_analysis: change inputs as desired.  
+   Outputs: see "LUDB Analysis" above.  
+2. Load plot_func to run the Plot section of spectro_analysis  
+3. wave_accuracy: uses "predictions_integer" output from any model *testing* output (such as the spectro_analysis script)
+   Explained: if the time points within a *single* p/qrs/t-wave is predicted more than the threshold, the wave is counted. This gives us an idea of how much the sensitivity is skewed by missing whole waves, versus missing the tail beginning/end of a wave
+   Inputs: threshold, predicted array and LUDB annotated array
+   Output:  
+      wave_accuracy: matrix of [(samples) x (p/qrs/t wave) x (predicted/total waves)]
+      p_accuracy: number of p-wave predicted / number of p-wave total
+
+# File Sequence for Training (non-spectrogram):  
+1. load LUDB_samples  
+2. Run NN_band_pass if desired  
+3. Run NN_train_script  
 
 # For Analysis File/s: 
 1. LUDB Analysis  
@@ -10,10 +27,13 @@
    confusion_table_by_sample: creates matrix of confusion tables for each predicted sample  
    confusion_by_sample_condensed: for each sample, gives accuracy of predicting 0, P, QRS and T in respective columns  
 
-# Models  
+
+# 
+
+# Models: (see updated .txt file under models folder)  
 ## Loading Models:  
 library(keras)  
-model <- load_model_tf("saved_model/model_lstm2")  
+model <- load_model_tf("saved_model/model_lstm2") etc  
 
 ## List:  
 model_lstm1: created using unfiltered data  
