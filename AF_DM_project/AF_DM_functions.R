@@ -27,6 +27,99 @@ HRV_RMSSD <- function(Rpeaks, Hz = 500) {
 
 
 
+# Wave Axis ---------------------------------------------------------------
+find_wave_axis <- function(signal12, ann12, wave_value) {
+  # Input: filtered signal**
+  # Output: 3D spatial vectors for each beat
+  # Find wave axis for each beat. Input: 12 lead signal and annotations.
+  
+  # Rpeaks <- peak_isolation(signal12[,1],ann12[,1])
+  
+  # waves <- c()
+  
+  # Lists of AUC and wave onset values for all 12 leads
+  AUC_full <- array(0,12)
+  wave_on_full <- array(0,12)
+  for (i in 1:12) {
+    wave_table <- find_wave_AUC(signal = signal12[,i], ann12[,i], wave_value = 1)
+    AUC_full[i] <- list(wave_table$AUC)
+    wave_on_full[i] <- list(wave_table$wave_on)
+  }
+  
+  # Because we can't assume each p-wave is the same index (one lead could miss 
+  # a wave), the leads are cross-chekced relative to lead 2 (most accurate lead)
+  window <- 75
+  
+  # For each wave in lead 2:
+  wave_3D_vector <- array(0,c(length(unlist(AUC_full[2])), 3))
+  for (i in 1:length(unlist(AUC_full[2]))) {
+    # Use most accurate lead- lead 2
+    index <- unlist(wave_on_full[2])[[i]] # Find wave onset index
+    
+    # Find AUC for each lead which is present within 50 indices of lead 2 onset
+    AUC_12lead <- array(0,12)
+    for (j in 1:12) {
+      # Isolate lead of interest
+      wave_on_indv <- unlist(wave_on_full[j])
+      AUC_indv <- unlist(AUC_full[j])
+      
+      # Find which index within the lead corresponds to lead 2 index:
+      wave_on_index <- which(wave_on_indv < index + window & wave_on_indv > index - window)
+      
+      # Print warning message if there is no corresponding wave in the lead:
+      if (length(wave_on_index) == 0) {
+        text <- paste("Warning: Lead #",j,"Beat #",i,"has no wave!")
+        warning(text)
+      }
+      
+      # Array of AUC for each lead
+      AUC_12lead[j] <- AUC_indv[wave_on_index]
+      
+    }
+    # Calculate 3D vector for each beat
+    wave_3D_vector[i,] <- kors(AUC_12lead)
+    
+  }
+  return(wave_3D_vector)
+  # For every p-wave in lead II:
+  #   Find AUC of p wave in other leads
+  
+  
+  # Verify wave_on is within ~50 indices
+  
+  
+  # compare beat to beat pwaves AUC
+  
+  # As a check, can compare AUC to QR, RS intervals
+}
+
+# Wave AUC ----------------------------------------------------------------
+
+find_wave_AUC <- function(signal, annotations, wave_value) {
+  # filtered signal**
+  isoelec <- isoelec_find(signal, annotations)
+  library(DescTools)
+  wave_table <- make_wave_table(annotations, wave_value)
+  
+  integral_indv <- array(0,length(wave_table$wave_type))
+  for (i in 1:length(wave_table$wave_type)) {
+    y <- signal[wave_table$wave_on[i]:wave_table$wave_off[i]] - c(isoelec)
+    x <- 1:length(y)
+    integral_indv[i] <- AUC(x = x, y = y)
+  }
+  
+  wave_table$AUC <- integral_indv
+  
+  return(wave_table)
+  
+  # simple: find variance over the 10 sec interval, average across all leads?
+  # for loop over all 12 leads?
+  
+  # Could coordinate across leads using R values. Between 0 to R1, R1 to R2...
+  # R_last to end
+  # It seems reasonable that R peak occurs after pwave for any combo of leads
+  # Error message if there are multiple p waves
+}
 # P Amplitude / Duration --------------------------------------------------
 wave_character <- function(signal, annotations, wave_value, Hz = 500) {
   # Uses make_wave_table. For each wave type specified (p/QRS/t), find onset,
