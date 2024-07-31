@@ -1,11 +1,13 @@
-ML_functions: General functions for ECG annotation
+ML_functions: General functions for ECG annotation  
 
-AF_DM_funcs: Functions specific to AF/DM project. Includes HRV, global electrical heterogeneity, P-wave amplitude, etc
+AF_DM_funcs: Functions specific to AF/DM project. Includes HRV, global electrical heterogeneity, P-wave amplitude, etc  
 
-Run ML_functions file for functions, followed by ann_test_script for a sample script.
+parallel_predict: contains code for creating pooled master annotation lead
 
-test_wfdb: LUDB wfdb file, not used for training
+Run ML_functions file for functions, followed by ann_test_script for a sample script.  
 
-test_data: 51 LUDB samples, not used to train models. Signal only.
+test_wfdb: LUDB wfdb file, not used for training  
 
-saved_model folder: models used in the sample script
+test_data: 51 LUDB samples, not used to train models. Signal only.  
+
+saved_model folder: models used in the sample script  

@@ -3,15 +3,17 @@ filter_samples <- function(signal, frequency = 500, low = 0.5, high = 40) {
   # Butterworth bandpass filter
   library(dplR)
   
+  # If vector, set to array
   if (is.vector(signal) == TRUE) {
     signal <- matrix(signal, nrow = 1)
   }
   
+  # Filter each line
   filtered <- array(0, dim(signal))
   for (i in 1:dim(signal)[[1]]) {
     filtered[i, ] <- pass.filt(
       signal[i, ],
-      c(f / high, f / low),
+      c(frequency / high, frequency / low),
       "pass",
       method = c("Butterworth"),
       n = 4,
@@ -30,6 +32,7 @@ build_spectrogram <- function(input, Fs = 500, window_size = 128, high_freq_cuto
   
   library(signal)
   
+  # Coordinate overlap, padding and window size
   overlap <- window_size - 1
   padding <- window_size / 2
   
@@ -112,6 +115,7 @@ build_spectrogram <- function(input, Fs = 500, window_size = 128, high_freq_cuto
 # Predict Samples ---------------------------------------------------------
 predict_samples <- function(signal, model_name, model_path) {
   # Prediction using model of choice
+  # Output: single integer for each time point
   
   # bug: must make compatible when submitting a single sample. ie array of length x must be converted to matrix of 
   # size: 1 by x
@@ -145,13 +149,90 @@ predict_samples <- function(signal, model_name, model_path) {
 }
 
 # R Peak Isolation --------------------------------------------------------
-peak_isolation <- function(signal, annotations, wave_value = 2) {
+simple_Rpeak_isolation <- function(signal, annotations) {
+  wave_value= 2
+
+  if (is.vector(signal) == TRUE) {
+    signal <- matrix(signal, nrow = 1)
+  }
+  
+  if (is.vector(annotations) == TRUE) {
+    annotations <- matrix(annotations, nrow = 1)
+  }
+  
+  peaks_full <- array(0,dim(signal)[[1]])
+  
+  
+  for (sample in 1:dim(signal)[[1]]) {
+    
+ 
+    # Find each continuous QRS segment:
+    
+    # wave_cluster: which time points are QRS
+    # wave_bounds: indices of QRS_predict which jump to the next QRS interval
+    
+    wave_cluster <-  which(annotations[sample, ] == wave_value)
+    
+    if (length(wave_cluster) <= 1) {
+      waves <- c('p','N','t')
+      print(paste('No',waves[wave_value],'wave detected'))
+      break
+    }
+    
+    change <- (wave_cluster[-1] - wave_cluster[1:(length(wave_cluster) - 1)])
+    
+    wave_bounds <- c(1)
+    wave_bounds <- c(wave_bounds, (which(change != 1) + 1))
+    wave_bounds <- c(wave_bounds, length(wave_cluster))
+    
+    midline <- median(signal[sample])
+    # Find R peak value within each QRS segment:
+    peaks <- array(0, length(wave_bounds) - 1)
+    for (i in 1:(length(wave_bounds) - 1)) {
+      sample_range <- signal[sample, wave_cluster[wave_bounds[i]:(wave_bounds[i + 1] - 1)]]
+      
+
+      # find which indices where the slope changes value
+      candidates <- which(diff(sign(diff(sample_range))) != 0)+ wave_cluster[wave_bounds[i]]
+      
+      # If there are no candidate points:
+      if (length(candidates) ==0) {
+        peaks[i] <- NA
+        text <- paste("No candidate points chosen on sample", sample, "wave number",i)
+        warning(text)
+      } else {
+        peaks[i] <- candidates[which.max(signal[candidates] - c(midline))]
+      }
+      
+      # Previous method using max value:
+      # peak_max <- which.max(sample_range) + wave_cluster[wave_bounds[i]] - 1
+      # peak_min <- which.min(sample_range) + wave_cluster[wave_bounds[i]] - 1
+      # 
+      # if ( abs(signal[peak_max] - midline) > abs(signal[peak_min] - midline)) {
+      #   peaks[i] <- peak_max
+      # } else {
+      #   peaks[i] <- peak_min
+      # }
+      
+    }
+    peaks_full[sample] <- list(peaks)
+  }
+  return(peaks_full)
+}
+  
+
+peak_isolation <- function(signal, annotations, wave_value = 2, midline_calc = "isoelec") {
   # Determine peak values of a wave of choice. Within a single continuous wave, 
   # Finds points which have a chance in slope value. Of those, find the value
   # the furthest from the isoelectric line
   
   # input signal: raw signal, not spectrogram
   # Use 10-sec duration model ( predict_samples() ) to determine annotations
+  
+  # Midline_calc option: a midline is needed to determine peaks. For samples 
+  # without dependable P/T annotations for T-P interval isoelectric point 
+  # calculation, set midline_calc to FALSE. In this case, the median of the 
+  # entire ECG will be used instead. This is meant mainly for R peak calculation
   
   if (is.vector(signal) == TRUE) {
     signal <- matrix(signal, nrow = 1)
@@ -167,7 +248,11 @@ peak_isolation <- function(signal, annotations, wave_value = 2) {
   for (sample in 1:dim(signal)[[1]]) {
     
     # midline <- median(signal)
-    midline <- isoelec_find(signal[sample,], annotations[sample,])
+    if (midline_calc == "isoelec") {
+      midline <- isoelec_find(signal[sample, ], annotations[sample, ])
+    } else {
+      midline <- median(signal[sample,])
+    }
     # Find each continuous QRS segment:
     
     # wave_cluster: which time points are QRS
@@ -185,6 +270,7 @@ peak_isolation <- function(signal, annotations, wave_value = 2) {
     for (i in 1:(length(wave_bounds) - 1)) {
       sample_range <- signal[sample, wave_cluster[wave_bounds[i]:(wave_bounds[i + 1] - 1)]]
       
+      # Set window for rolling average
       if (length(sample_range) < 40) {
         #window is 1/3 of range, odd number
         window <- ceiling(2*round(length(sample_range) / 6) + 1)
@@ -192,6 +278,7 @@ peak_isolation <- function(signal, annotations, wave_value = 2) {
       window <- 11
       }
       
+      # Rolling average
       sample_range_mean <- rollmean_custom(sample_range,window)
       
       # find which indices where the slope changes value
@@ -227,10 +314,18 @@ peak_isolation <- function(signal, annotations, wave_value = 2) {
 # Isoelectric Line --------------------------------------------------------
 isoelec_find <- function(signal,annotations) {
   # Finds the mean value of the T-P intervals within the given sample lead
+  # Output: single mV value
   # take mean vs. median of T-P intervals?
   
+  if (sum(annotations == 1) > 0) {
   pwaves <- make_wave_table(annotations, wave_value = 1)
   twaves <- make_wave_table(annotations, wave_value = 3)
+  } else {
+    twaves <- make_wave_table(annotations, wave_value = 3)
+    print(paste("No pwaves found. Using T-R interval for isoelec point"))
+    pwaves <- make_wave_table(annotations, wave_value = 2)
+    pwaves$wave_type <- "p"
+  }
 
   combined <- rbind(pwaves,twaves)
   combined <- combined[order(combined$wave_on),]
@@ -358,7 +453,7 @@ RR_waveform_prediction <- function(input,model_name,model_path) {
   library(caret) # probably don't need. Probably just need keras
   library(keras) 
   
-  # will want to avoid calling libraries inside functions for toher users 
+  # will want to avoid calling libraries inside functions for other users 
   
   # default label for confidence, add parameter to be __% sure that it is a p/qrs/t wave.
   # or add in a function for confidence interval of each time point
@@ -411,17 +506,27 @@ make_wave_table <- function(annotations,  wave_value) {
   # Gives table of specified on/offset times for any wave- P/QRS/T 
   # Multi-sample input handling using "sample" column
   
-  # Could include time values, in addition to indeces
+  # Could include time values, in addition to indices
   if (is.vector(annotations) == TRUE) {
     annotations <- matrix(annotations, nrow = 1)
   }
   
+  wave_classes <- c(0,"p","N","t")
+  
   wave_on <- c()
   wave_off <- c()
   sample <- c()
+  wave_type <- c()
   
   for (i in 1:dim(annotations)[[1]]) {
     wave_cluster <-  which(annotations[i, ] == wave_value)
+    if (length(wave_cluster) == 0) {
+      wave_type = c(wave_type, NA)
+      wave_on <- c(wave_on, NA)
+      wave_off <- c(wave_off, NA)
+      sample <- c(sample, i)
+      break
+    }
     
     change <- (wave_cluster[-1] - wave_cluster[1:(length(wave_cluster) - 1)])
     
@@ -433,10 +538,12 @@ make_wave_table <- function(annotations,  wave_value) {
     
     sample <- c(sample, array(i, sum(change != 1) + 1))
     
+    wave_type <- c(wave_type,array(wave_classes[wave_value+1],(length(wave_on) - length(wave_type))))
+    
   }
   
-  wave_classes <- c(0,"p","N","t")
-  wave_type <- array(wave_classes[wave_value+1],length(wave_on))
+  
+  # wave_type <- array(wave_classes[wave_value+1],length(wave_on))
   
   wave_table <- data.frame(wave_type = wave_type, wave_on = wave_on, wave_off = wave_off, sample = sample)
   
@@ -449,7 +556,7 @@ upscale_250 <- function(signal) {
   # Used only for model testing. Simple upsampling from 250 Hz to 500 Hz for 
   # MIT-BIH dataset
   
-  if (is.vector(signal) == TRUE) {
+  if (is.vector(signal) == TRUE | length(dim(signal)) == 1) {
     signal_upsample <- array(0, length(signal))
     
     for (i in 1:2499) {
@@ -635,4 +742,30 @@ plot_func <- function(x, y, color = 0,linewidth=0.5, plotly = 'yes') {
   return(plot)
 }
 
+
+# Confidence Plot ---------------------------------------------------------
+plot_confidence <- function(y,color=0) {
+  # library(ggplot2)
+  library(plotly)
+  library(RColorBrewer)
+  
+  color <- c(color)
+  color <- round(color,2)
+  
+  y <- c(y)
+  
+  x <- 1:length(y)
+  
+  frame <- data.frame(Time = x, Signal = y, Confidence = color)
+  
+  fig <- plot_ly(frame, x = ~Time)
+  fig <- fig %>% add_trace(data = frame, y = ~Signal, type = 'scatter', 
+                           mode = 'lines', color = I('black')) %>% 
+    add_trace(y = ~Signal, color = ~Confidence, size = 10,
+              type = 'scatter', mode = 'markers',
+              text = ~paste("Conf:",Confidence))
+    
+  
+  return(fig)
+}
 

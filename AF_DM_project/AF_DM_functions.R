@@ -3,18 +3,55 @@ HRV_RMSSD <- function(Rpeaks, Hz = 500) {
   # Find RMSSD for 10 sec ECG
   # Input should be index values, not time values
   
+  if (length(unlist(Rpeaks)) <= 1) {
+    print(paste('No Rpeaks in input'))
+    return(NA)
+    stop()
+  }
+  
   # Multi-sample input:
   if (class(Rpeaks) == "list") {
     RMSSD <- array(0,length(Rpeaks))
     for (i in (1:length(Rpeaks))) {
       Rpeaks_indv <- unlist(Rpeaks[i])
+      
+      if (is.na(Rpeaks_indv[1]) == TRUE) {
+        Rpeaks_indv <- Rpeaks_indv[-1]
+      }
+      
+      if (is.na(Rpeaks_indv[length(Rpeaks_indv)] == TRUE)) {
+        Rpeaks_indv <- Rpeaks_indv[-(length(Rpeaks_indv))]
+      }
+      
+      if (length(Rpeaks_indv) < 3) {
+        print(paste('Not enough Rpeaks'))
+        return(NA)
+        stop()
+      }
+      
       Rpeaks_indv <- Rpeaks_indv / Hz
       interval <- Rpeaks_indv[-1] - Rpeaks_indv[1: (length(Rpeaks_indv) - 1)]
       RMSSD[i] <- sqrt( 1/(length(interval)- 1) * sum((interval[1: (length(interval) - 1)] - interval[-1])^2))
     }
     
   # Single-sample input:  
-  } else if (is.vector(Rpeaks = TRUE)) {
+  # } else if (is.vector(Rpeaks) == TRUE) {
+  } else if (class(Rpeaks != 'list')) {
+    Rpeaks_indv <- Rpeaks
+    if (is.na(Rpeaks[1]) == TRUE) {
+      Rpeaks_indv <- Rpeaks_indv[-1]
+    }
+    
+    if (is.na(Rpeaks[length(Rpeaks_indv)] == TRUE)) {
+      Rpeaks_indv <- Rpeaks_indv[-(length(Rpeaks_indv))]
+    }
+    
+    if (length(Rpeaks_indv < 3)) {
+      print(paste('Not enough Rpeaks'))
+      return(NA)
+      stop()
+    }
+    
     Rpeaks = Rpeaks / Hz
     interval <- Rpeaks[-1] - Rpeaks[1:(length(Rpeaks) - 1)]
     RMSSD <- sqrt(1 / (length(interval) - 1) * sum((interval[1:(length(interval) - 1)] - interval[-1]) ^2))
@@ -96,11 +133,25 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
 # Wave AUC ----------------------------------------------------------------
 
 find_wave_AUC <- function(signal, annotations, wave_value) {
-  # filtered signal**
+  # NOTE: use filtered signal as input
+  # Wave_value: 1,2 or 3 for P, QRS or T.
+  
+  # Finds the average AUC of a given wave type, for a single sample
+  # baseline for the AUC is the median of the T-P interval
+  
+  # Currently, AUC does not use time values for x, but this can be adjusted.
+  
+  # Find isoelectric point: 
   isoelec <- isoelec_find(signal, annotations)
   library(DescTools)
+  
+  # Make table to keep track of onset/offset of wave of interest:
   wave_table <- make_wave_table(annotations, wave_value)
   
+  # Remove first and last wave:
+  wave_table <- wave_table[2:(nrow(wave_table)-1),]
+  
+  # For each wave, find AUC and add to wave_table dataframe:
   integral_indv <- array(0,length(wave_table$wave_type))
   for (i in 1:length(wave_table$wave_type)) {
     y <- signal[wave_table$wave_on[i]:wave_table$wave_off[i]] - c(isoelec)
@@ -126,11 +177,47 @@ wave_character <- function(signal, annotations, wave_value, Hz = 500) {
   # offset, duration and amplitude of the wave. Output in dataframe format
   
   wave_table <- make_wave_table(annotations, wave_value)
-
+  
+  # If table returns NA, exit
+  if (sum(is.na(wave_table) > 0)) {
+    wave_table$duration <- NA
+    wave_table$amplitude <- NA
+    return(wave_table)
+    exit('Sample had no waves of specified type')
+  }
+  
+  
+  wave_ind <- which(annotations != 0)
+  # Remove first wave, if no other types of waves precede it:
+  if (wave_ind[1] == wave_table$wave_on[1]) {
+    if (nrow(wave_table) > 1) {
+      wave_table <- wave_table[-1, ]
+    } else {
+      # In addition to above condition, if there is only 1 wave, exit function:
+      wave_table$duration <- NA
+      wave_table$amplitude <- NA
+      return(wave_table)
+      exit('Only one wave found at terminus of annotations.')
+    }
+  }
+  
+  # Remove last wave, if no other types of waves follow it:
+  if (wave_ind[length(wave_ind)] == wave_table$wave_off[nrow(wave_table)]) {
+    if (nrow(wave_table) > 1) {
+      wave_table <- wave_table[-nrow(wave_table), ]
+    } else {
+      # In addition to above condition, if there is only 1 wave, exit function:
+      wave_table$duration <- NA
+      wave_table$amplitude <- NA
+      return(wave_table)
+      exit('Only one wave found at terminus of annotations.')
+    }
+  }
+  
   duration <- (wave_table$wave_off - wave_table$wave_on) / Hz
   
-  amplitude <- array(0, dim(wave_table)[[1]])
-  for (i in 1:dim(wave_table)[[1]]) {
+  amplitude <- array(NA, nrow(wave_table))
+  for (i in 1:nrow(wave_table)) {
   max <- max(signal[wave_table$sample[i], wave_table$wave_on[i]:wave_table$wave_off[i]])
   min <- min(signal[wave_table$sample[i], wave_table$wave_on[i]:wave_table$wave_off[i]])
   
@@ -202,6 +289,7 @@ geh <- function(XYZ_M, origin_point, GEH_Ronset, GEH_Rpeak, GEH_Roffset, GEH_Tpe
   Taxis = XYZ_median[tp_points_VM[1],]
   
   # % ========================== Calculate AUC on Vector Magnitude ===========================
+  # AUC from QRS thru T wave end
   library(DescTools)
   x <- 1:length(q_points_VM[1]:te_points_VM[1])
   
@@ -211,7 +299,7 @@ geh <- function(XYZ_M, origin_point, GEH_Ronset, GEH_Rpeak, GEH_Roffset, GEH_Tpe
   
   
   # % ======================= GEH Variable Calculation =============================
-  # %  origin point
+  # %  origin point values
   CP <- XYZ_median[OriginPoint_idx,]
   # % Y axis vector
   Ynew <- c(0,1,0)
@@ -219,6 +307,7 @@ geh <- function(XYZ_M, origin_point, GEH_Ronset, GEH_Rpeak, GEH_Roffset, GEH_Tpe
   
   
   # % QRS and T integration: for Wilson SVG calculation
+  # AUC from Q to T end on each lead
   x <- 1:length(q_points_VM[1]:te_points_VM[1])
   SumVGx <- AUC(x = x, y = XYZ_median[(q_points_VM[1] : te_points_VM[1]),1])*spac_incr
   SumVGy <- AUC(x = x, y = XYZ_median[(q_points_VM[1] : te_points_VM[1]),2])*spac_incr
@@ -226,30 +315,34 @@ geh <- function(XYZ_M, origin_point, GEH_Ronset, GEH_Rpeak, GEH_Roffset, GEH_Tpe
   
   
   # % QRS and T integration for area vectors
+  # AUC of QRS, S to T_end for each spatial lead
   
   qs <- 1:length(q_points_VM[1]:s_points_VM[1])
   st <- 1:length(s_points_VM[1]:te_points_VM[1])
   
   meanVxQ <- AUC(x=qs, y=XYZ_median[q_points_VM[1]:s_points_VM[1],1])*spac_incr
   meanVxT <- AUC(x=st, y=XYZ_median[s_points_VM[1]:te_points_VM[1],1])*spac_incr
+  
   meanVyQ <- AUC(x=qs, y=XYZ_median[q_points_VM[1]:s_points_VM[1],2])*spac_incr
   meanVyT <- AUC(x=st, y=XYZ_median[s_points_VM[1]:te_points_VM[1],2])*spac_incr
+  
   meanVzQ <- AUC(x=qs, y=XYZ_median[q_points_VM[1]:s_points_VM[1],3])*spac_incr
   meanVzT <- AUC(x=st, y=XYZ_median[s_points_VM[1]:te_points_VM[1],3])*spac_incr
   
   
   
   # % QRS area and T area vectors based on integrals
+  # Find average AUC for QRS, S to t_off
   MEAN_QRSO <- c(meanVxQ, meanVyQ, meanVzQ)
   MEAN_TO <- c(meanVxT, meanVyT, meanVzT)
   
   
-  # %% QT interval
+  # %% QT interval in sec
   timeM <- ((1:length(VecMag))/fs)*1000
   QT_interval <- timeM[te_points_VM[1]] - timeM[q_points_VM[1]]
   
-  ##LEAVE OFF:
   # % peak vectors QRS and T amplitude
+  # Raxis: peak QRS values. Taxis: peak T values
   QRS_amp <- sqrt(Raxis[1]^2 + Raxis[2]^2 + Raxis[3]^2)
   T_amp <- sqrt(Taxis[1]^2 + Taxis[2]^2 + Taxis[3]^2)
   
