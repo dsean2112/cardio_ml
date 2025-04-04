@@ -100,7 +100,9 @@ prep_ludb <- function(lead,
     testing_annotations[sample, ] <- ann
   }
   
-  return(list(training_signal,training_annotations,testing_signal,testing_annotations))
+  return(list(training_signal,training_annotations,
+              testing_signal,testing_annotations,
+              training_samples, testing_samples))
 }
 
 # ann_wfdb2continuous1 ----------------------------------------------------
