@@ -5,11 +5,6 @@ prep_ludb <- function(lead,
   # Load LUDB set
   load('ludb_set.RData')
   
-  
-  # Select lead**
-  lead <- 1 # number 1 thru 12. Note: in wfdb$signal, first column is
-  # Select annotation style**
-  
   # Assign the annotation style for ML input:
   use_func <- paste0('ann_wfdb2continuous', annotator_style)
   #         ann_wfdb2continuous1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
@@ -100,9 +95,17 @@ prep_ludb <- function(lead,
     testing_annotations[sample, ] <- ann
   }
   
-  return(list(training_signal,training_annotations,
-              testing_signal,testing_annotations,
-              training_samples, testing_samples))
+  output <- list(
+    training_signal = training_signal,
+    training_annotations = training_annotations,
+    testing_signal = testing_signal,
+    testing_annotations = testing_annotations,
+    training_samples = training_samples,
+    testing_samples = testing_samples
+  )
+  
+  return(output)
+  
 }
 
 # ann_wfdb2continuous1 ----------------------------------------------------
@@ -284,3 +287,63 @@ ann_wfdb2continuous3 <- function(object) {
   return(output)
   
 }
+
+
+# Confusion matrix analysis ----------------------------------------------------------------
+confusion_analysis <- function(predictions = predictions_integer,
+                               actual = testing_annotations) {
+  # Quick analysis of predicted values
+  
+  library(caret)
+  levels <- sort(unique(as.vector(actual))) # number of value types must be the same when factoring
+  
+  confusion_matrix <- confusionMatrix(
+    data      = factor(predictions, levels = levels),
+    reference = factor(actual, levels = levels)
+  )
+  
+  confusion_table <- t(t(confusion_matrix$table) / colSums(confusion_matrix$table)) * 100
+  
+  print(round(confusion_matrix$byClass,3))
+  print(round(confusion_table, 1))
+  # return(confusion_matrix)
+}
+# Custom plotting function ------------------------------------------------
+plot_func <- function(y, 
+                      color = 0,
+                      linewidth=0.5, 
+                      pointsize = 1.5, 
+                      ylim = NULL, 
+                      plotly = 'yes', 
+                      x) {
+  # Custom plotting function, Can toggle between ggplot (plotly = 'no') vs
+  # plotly 
+  library(ggplot2)
+  library(plotly)
+  color <- c(color)
+  y <- c(y)
+  
+  color[color == 1] <- 'p'
+  color[color == 2] <- 'N'
+  color[color == 3] <- 't'
+  
+  x <- 1:length(y)
+  
+  frame <- data.frame(Time = x, Signal = y)
+  plot <-
+    ggplot(frame, aes(Time, Signal, color = color)) +
+    geom_path(linewidth = linewidth, aes(group = 1)) + geom_point(size = pointsize) +
+    scale_x_continuous(breaks = seq(0, 10, 1)) + 
+    theme(legend.position = "none") + 
+    theme(legend.title = element_blank()) +
+    theme_bw() + 
+    coord_cartesian(ylim = ylim)
+  
+  if (plotly == 'yes') {
+    plot <- ggplotly(plot)
+  }
+  
+  # original linewidth = 0.25
+  return(plot)
+}
+
