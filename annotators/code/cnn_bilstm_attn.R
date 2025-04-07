@@ -10,12 +10,12 @@ training_annotations <- out$training_annotations
 testing_signal <- out$testing_signal
 testing_annotations <- out$testing_annotations
 
-
 # Build Model -------------------------------------------------------------------
 library(keras)
 remove(cnn_bilstm_attn_model)
 
 dropout <- 0.5
+bilstm_layers <- 64 # original: 64
 
 n_classes <- length(unique(as.vector(training_annotations)))
 
@@ -35,7 +35,7 @@ conv_block <-
 # BiLSTM Block
 bilstm_block <-
   conv_block |>
-  bidirectional(layer_lstm(units = 64, return_sequences = TRUE)) |>
+  bidirectional(layer_lstm(units = bilstm_layers, return_sequences = TRUE)) |>
   layer_dropout(rate = dropout)  # Dropout after BiLSTM
 
 # Self Attention Block
@@ -44,7 +44,7 @@ attn_block <-
   layer_dense(units = 1, activation = "tanh") |>
   layer_flatten() |>
   layer_activation("softmax") |>
-  layer_repeat_vector(128) |>
+  layer_repeat_vector(bilstm_layers*2) |>
   layer_permute(c(2, 1))
 
 mult_attn_block <- layer_multiply(list(bilstm_block, attn_block))
@@ -61,8 +61,9 @@ cnn_bilstm_attn_model |> compile(
   # optimizer = optimizer_adam(),
   optimizer = 'rmsprop',
   loss = "sparse_categorical_crossentropy",
-  metrics = c("accuracy"),
-  loss_weights = c(0.1, 1, 1, 1)  # Adjust weights for each class
+  # loss_weights = c(0.1, 1, 1, 1),  # Adjust weights for each class
+  metrics = c("accuracy")
+  
 )
 
 
@@ -90,4 +91,10 @@ for (i in 1: nrow(predictions)) {
 predictions_integer <- predictions_integer - 1
 
 
- 
+# Analysis
+confusion_analysis()
+
+# plot --------------------------------------------------------------------
+
+sample <- 10
+plot_func(testing_signal[sample,],predictions_integer[sample,])

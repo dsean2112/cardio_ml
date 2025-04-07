@@ -102,7 +102,7 @@ rm(list = ls(pattern = 'conv[1-9]$|merge[1-9]|up[1-9]|upsample|outputs$|^inputs$
 
 
 # Train -------------------------------------------------------------------
-epochs <- 10 # ~5s per step
+epochs <- 50 # ~5s per step
 history <- model |> fit(
   training_signal,
   training_annotations,

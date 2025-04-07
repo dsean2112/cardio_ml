@@ -1,4 +1,7 @@
 # Build training and testing  sets---------------------------------------
+#' @descrption Input: custom list of LUDB annotations and signal. Splits into training/testing. 
+#' Takes random continuous segment between 2 and 8 seconds, zeros the rest. Randomly shifts the segment across the vector
+#' Then normalizes the signal for each sample.
 prep_ludb <- function(lead,
                       annotator_style = 2,
                       split = 0.7) {
@@ -94,6 +97,14 @@ prep_ludb <- function(lead,
     testing_signal[sample, ] <- signal
     testing_annotations[sample, ] <- ann
   }
+  
+  # Normalize set:
+  training_signal <- t(apply(training_signal, 1, function(ecg) {
+    (ecg - min(ecg)) / (max(ecg) - min(ecg))
+  }))
+  testing_signal <- t(apply(testing_signal, 1, function(ecg) {
+    (ecg - min(ecg)) / (max(ecg) - min(ecg))
+  }))
   
   output <- list(
     training_signal = training_signal,
