@@ -1,6 +1,9 @@
 # Prep --------------------------------------------------------------------
-source('code/annotator_prep_functions.R')
-out <- prep_ludb(lead = 1, annotator_style = 2)
+source('annotator_prep_functions.R')
+annotator_style <- 2
+lead <- 1
+out <- prep_ludb(lead = lead, annotator_style = annotator_style)
+
 #         1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
 #         2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
 #         3: 1 2 2 2 3 0 0 0 4 5 5 6 ...
@@ -24,10 +27,14 @@ training_signal <- cbind(half_pad,training_signal,half_pad)
 # INPUTS:
 filters = 16 # typically 8, 16 or 32
 dropout = 0.3 # typically between 0,3 - 0.5
-
+model_type <- 'unet'
 
 library(keras)
 rm(model)
+
+date_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
+model_name <- paste0(model_type,'_',date_time)
+
 
 # Find the number of classes in the annotation matrix (either 4 or 10 depending on annotator style)
 num_classes <- length(unique(as.vector(training_annotations)))
@@ -102,17 +109,34 @@ rm(list = ls(pattern = 'conv[1-9]$|merge[1-9]|up[1-9]|upsample|outputs$|^inputs$
 
 
 # Train -------------------------------------------------------------------
-epochs <- 50 # ~5s per step
+epochs <- 10 # ~5s per step
+
+# Print to command line
+cat("model_type:", model_type, "\n",
+    "model_name:", model_name, "\n",
+    "filters:", filters, "\n",
+    "epochs:", epochs, "\n",
+    "dropout:", dropout, "\n",
+    "annotator_style:", annotator_style, "\n")
+
+
+start <- Sys.time()
+
 history <- model |> fit(
   training_signal,
   training_annotations,
   epochs = epochs,
   # validation_data = list(val_inputs, val_targets),
   validation_data = list(testing_signal, testing_annotations),
-  # loss_weights = c(0.2, 1, 1, 1), # experimenting with decreasing the weight of '0' annotations (ie no wave)
+  # loss_weights = c(0.1, 1, 1, 1), # experimenting with decreasing the weight of '0' annotations (ie no wave)
   verbose = 2
   ) 
 
+end <- Sys.time()
+time_spent <- end-start
+
+# output_name <- paste0("../models/",model_name)
+# save_model_tf(model, output_name)
 
 # Test --------------------------------------------------------------------
 predictions <- model %>% predict(testing_signal)
@@ -129,7 +153,37 @@ predictions_integer <- predictions_integer - 1
 # Analysis
 confusion_analysis()
 
+# Write to log ------------------------------------------------------------
+# Add lock to avoid overwriting
+library(filelock)
+logFile <- '../models/model_log.RData'
+lockFile <- paste0(logFile, ".lock")  # Create a lock file
+# Acquire the lock before loading or saving
+lock <- lock(lockFile)
+load(logFile)
+
+
+new_row <- data.frame(
+  name = model_name,
+  type = model_type,
+  ann_style = annotator_style,
+  lead = lead,
+  bilstm_layers = NA,
+  dropout = dropout,
+  filters = filters,
+  epochs = epochs,
+  time = round(time_spent, 2),
+  training_samples = I(list(out$training_samples)),
+  confusion = I(list(confusion))
+)
+
+model_log <- rbind(model_log, new_row)
+save(model_log, file = logFile)
+
+# Release the lock
+unlock(lock)
+
 # plot --------------------------------------------------------------------
 
-sample <- 10
-plot_func(testing_signal[sample,],predictions_integer[sample,])
+# sample <- 10
+# plot_func(testing_signal[sample,],predictions_integer[sample,])
