@@ -1819,20 +1819,44 @@ predictions2integer_threshold <- function(predictions, threshold = 0.5) {
 
 
 # check annotations -------------------------------------------------------
-validate_ecg_waves <- function(signal, ann_wfdb, 
+# check annotations -------------------------------------------------------
+#' @description Checks wave progression of ECG annotations. Uses a Pan-Tompkins method from EGM to check for QRS, then adjacent windows for P and T waves. Checks for missed or duplicate waves
+#'  NOTE: input can either be a wfdb format ECG and specified lead (ie 'I') OR individual signal and annotation files for a single lead (as well as fs rate)
+#'    eg: validate_ecg_waves(wfdb = wfdb, lead = 'I') OR validate_ecg_waves(signal = wfdb$signal$I, ann_wfdb = wfdb$annotation$I)
+#' @param wfdb wfdb object with sig, ann and header. If defined, 'lead' should also be defined
+#' @param lead lead name. ie c('I'). To be used with 'wfdb' style input
+#' 
+#' @param signal signal of the ECG. Simple vector. To be used with 'ann_wfdb', as well as fs
+#' @param ann_wfdb wfdb format annotation of the ECG. To be used with 'signal', as well as fs
+#' @param fs sampling rate of ECG. Only needed when using signal / ann_wfdb inputs. Not needed for wfdb / lead input
+#' 
+#' @param terminal_boundary the flanking indices you would like removed from the annotation check. 
+#' 
+#' @param pr_window defined window to search for the P-waves, distance from the Rpeak. ie c(80,  350). NOTE: by default, these are dynamically calculated based on RR interval
+#' @param rt_window defined window to search for the T-waves, distance from the Rpeak. ie c(120, 500). NOTE: by default, these are dynamically calculated based on RR interval
+#' 
+#' @return Returns a dataframe with columns for QRS, P and T wave flags and flag indices, and check if in range of windows. The flag columns specify missing or duplicate (or NA) 
+#'    flag: NA (normal wave), duplicate or missing
+#'    p/t_flag_idx: index of the duplicate waves, OR the index of where the P/T wave may be located
+#'    p/t_in_range: if the wave is contained within the defined window
+
+
+validate_ecg_waves <- function(wfdb = NULL, 
+                               lead = NULL, 
+                               signal = NULL, 
+                               ann_wfdb = NULL, 
                                fs = 500,
                                terminal_boundary = 250,
-                               pr_window = c(80, 350),   # ms before R
-                               rt_window = c(120, 500)) { # ms after R
-  #' @description
-    #' Checks wave progression of ECG annotations. Uses a Pan-Tompkins method from EGM to check for QRS, then adjacent windows for P and T waves. Checks for missed or duplicate waves
-  #' @return Returns a dataframe with columns for QRS, P and T wave flags and flag indices. The flag columns specify missing or duplicate (or NA) 
-  library(dplyr)
-  library(EGM)
+                               pr_window = NULL,   # ms before R
+                               rt_window = NULL) { # ms after R
   
-  # Convert ms to samples
-  pr_window <- round(pr_window * fs / 1000)
-  rt_window <- round(rt_window * fs / 1000)
+  if (exists('wfdb')) {
+    signal <- wfdb$signal[[lead]]
+    ann_wfdb <- wfdb$annotation[[lead]]
+    fs <-  attributes(wfdb$header)$record_line$frequency
+  }
+  
+  sig_length <- length(signal) # update this in future
   
   # Collapse annotations
   ann_compact <- ann_wfdb2compact(ann_wfdb)
@@ -1842,10 +1866,63 @@ validate_ecg_waves <- function(signal, ann_wfdb,
   rpeaks <- rpeaks[rpeaks < (length(signal) - terminal_boundary)]
   rpeaks <- rpeaks[rpeaks > terminal_boundary]
   
+  if (!length(rpeaks)) {
+    empty <- data.frame(rpeak = numeric(0),
+                        p_flag = character(0),
+                        p_flag_idx = character(0),
+                        t_flag = character(0),
+                        t_flag_idx = character(0),
+                        qrs_flag = character(0),
+                        qrs_flag_idx = character(0),
+                        stringsAsFactors = FALSE)
+    return(empty)
+  }
+  
+  calc_pr_window_ms <- function(rr_ms) {
+    hr <- 60000 / rr_ms
+    hr <- min(max(hr, 40), 160)
+    pr_center <- 200 - 0.8 * (hr - 60)
+    pr_center <- max(min(pr_center, 220), 110)
+    lower <- max(pr_center - ifelse(hr < 70, 70, 55), 60)
+    upper <- min(pr_center + ifelse(hr < 70, 80, 65), 260)
+    if (upper <= lower) upper <- lower + 30
+    c(lower, upper)
+  }
+  
+  # Similarly, calculate RR interval
+  # Probably take an average of Frederica and Bazzett for now
+  calc_rt_window_ms <- function(rr_ms) {
+    rr_s <- rr_ms / 1000
+    qt_baz <- 440 * sqrt(rr_s)
+    qt_frd <- 430 * rr_s^(1/3)
+    qt_center <- (qt_baz + qt_frd) / 2
+    qt_center <- max(min(qt_center, 500), 300)
+    qt_low <- max(qt_center - 90, 240)
+    qt_high <- min(qt_center + 90, 520)
+    rt_low <- max(qt_low - 60, 120)
+    rt_high <- min(qt_high - 20, 520)
+    if (rt_high <= rt_low) rt_high <- rt_low + 40
+    c(rt_low, rt_high)
+  }
+  
+  rr_intervals_ms <- diff(rpeaks) * 1000 / fs
+  rr_valid <- rr_intervals_ms[rr_intervals_ms >= 300 & rr_intervals_ms <= 2000]
+  rr_reference <- if (length(rr_valid)) stats::median(rr_valid) else 1000
+  
+  # Make sure RR intervals are valid and reasonable
+  sanitize_rr <- function(rr_vec) {
+    rr_vec[!is.finite(rr_vec) | rr_vec < 300 | rr_vec > 2000] <- rr_reference
+    rr_vec
+  }
+  
+  rr_prev <- sanitize_rr(c(rr_reference, rr_intervals_ms))
+  rr_next <- sanitize_rr(c(rr_intervals_ms, rr_reference))
+  rr_local <- sanitize_rr((rr_prev + rr_next) / 2)
+  
   # --- QRS CHECK SECTION ---
   # Identify QRS from annotations, remove those at termini
-  qrs_ann <- ann_compact %>% filter(type == "N")
-  qrs_ann <- qrs_ann %>% filter(peak < (length(signal) - terminal_boundary) & peak > terminal_boundary)
+  qrs_ann <- ann_compact |> dplyr::filter(type == "N")
+  qrs_ann <- qrs_ann |> dplyr::filter(peak < (length(signal) - terminal_boundary) & peak > terminal_boundary)
   
   # For each rpeak, check if it falls inside any QRS annotation
   rpeak_matches <- sapply(rpeaks, function(r) {
@@ -1883,66 +1960,107 @@ validate_ecg_waves <- function(signal, ann_wfdb,
       qrs_flag_idx = duplicate_idx,
       stringsAsFactors = FALSE
     )
-    qrs_flags <- bind_rows(qrs_flags, dup_row)
+    qrs_flags <- dplyr::bind_rows(qrs_flags, dup_row)
   }
   # --- END QRS CHECK SECTION ---
   
   # Initialize results as a list of rows
-  results <- lapply(rpeaks, function(r) {
-    # Define search windows
-    pr_range <- (r - pr_window[2]):(r - pr_window[1])
-    rt_range <- (r + rt_window[1]):(r + rt_window[2])
-    rt_range <- rt_range[rt_range <= 5000]
+  results <- lapply(seq_along(rpeaks), function(idx) {
+    r <- rpeaks[idx]
+    prior_r <- if (idx == 1) {terminal_boundary} else {rpeaks[idx-1]} # define prior R peak. If undefined, set as terminal boundary
+    next_r <- if (idx == length(rpeaks)) {sig_length - terminal_boundary} else {rpeaks[idx+1]} # define next R peak. If undefined, set as terminal boundary
     
-    # Restrict to annotations within windows
-    p_candidates <- ann_compact %>% filter(type == "p", onset %in% pr_range)
-    t_candidates <- ann_compact %>% filter(type == "t", offset %in% rt_range)
+    pr_samples <- if (is.null(pr_window)) {
+      win <- round(calc_pr_window_ms(rr_prev[idx]) * fs / 1000)
+      if (win[2] <= win[1]) win[2] <- win[1] + 1
+      win
+    } else {
+      win <- round(pr_window * fs / 1000)
+      if (length(win) != 2) stop("pr_window must be length 2 if provided.")
+      if (win[2] <= win[1]) win[2] <- win[1] + 1
+      win
+    }
+    
+    rt_samples <- if (is.null(rt_window)) {
+      win <- round(calc_rt_window_ms(rr_local[idx]) * fs / 1000)
+      if (win[2] <= win[1]) win[2] <- win[1] + 1
+      win
+    } else {
+      win <- round(rt_window * fs / 1000)
+      if (length(win) != 2) stop("rt_window must be length 2 if provided.")
+      if (win[2] <= win[1]) win[2] <- win[1] + 1
+      win
+    }
+    
+    # Define search windows
+    pr_range <- (r - pr_samples[2]):(r - pr_samples[1])
+    pr_range <- pr_range[pr_range >= 1]
+    rt_range <- (r + rt_samples[1]):(r + rt_samples[2])
+    rt_range <- rt_range[rt_range >= 1 & rt_range <= length(signal)]
+    
+    # Restrict to annotations within RR intervals
+    
+    p_candidates <- ann_compact |> dplyr::filter(type == "p", onset %in% prior_r:r)
+    t_candidates <- ann_compact |> dplyr::filter(type == "t", offset %in% r:next_r)
     
     # Flags
     p_flag <- NA
     p_flag_idx <- NA
+    p_in_range <- NA
     if (nrow(p_candidates) == 0) {
       p_flag <- "missing"
-      p_flag_idx <- round(mean(pr_range))
+      p_flag_idx <- if (length(pr_range)) paste(round(mean(pr_range))) else NA
     } else if (nrow(p_candidates) > 1) {
       p_flag <- "duplicate"
-      p_flag_idx <- paste(p_candidates$peak[-1], collapse = ";")
+      p_flag_idx <- paste(p_candidates$peak, collapse = ";")
     }
+    if(any(p_candidates$peak %in% pr_range)) {p_in_range <- TRUE} else {p_in_range <- FALSE}
+    
     
     t_flag <- NA
     t_flag_idx <- NA
     if (nrow(t_candidates) == 0) {
       t_flag <- "missing"
-      t_flag_idx <- round(mean(rt_range))
+      t_flag_idx <- if (length(rt_range)) paste(round(mean(rt_range))) else NA
     } else if (nrow(t_candidates) > 1) {
       t_flag <- "duplicate"
-      t_flag_idx <- paste(t_candidates$peak[-1], collapse = ";")
+      t_flag_idx <- paste(t_candidates$peak, collapse = ";")
     }
+    if(any(t_candidates$peak %in% rt_range)) {t_in_range <- TRUE} else {t_in_range <- FALSE}
     
     return(data.frame(rpeak = r,
                       p_flag = p_flag,
                       p_flag_idx = p_flag_idx,
+                      p_in_range = p_in_range,
                       t_flag = t_flag,
                       t_flag_idx = t_flag_idx,
+                      t_in_range = t_in_range,
                       stringsAsFactors = FALSE))
   })
   
-  results_df <- bind_rows(results)
+  results_df <- dplyr::bind_rows(results)
   
   # Merge QRS flags into results
-  # final <- results_df %>%
+  # final <- results_df |>
   #   left_join(qrs_flags, by = "rpeak")
   
-  final <- results_df %>%
-    left_join(qrs_flags %>% filter(!is.na(rpeak)), by = "rpeak")
+  final <- 
+    results_df |>
+    dplyr::left_join(qrs_flags |> 
+                       dplyr::filter(!is.na(rpeak)), by = "rpeak")
   
   # Add the duplicate summary row back in
-  dup_row <- qrs_flags %>% filter(is.na(rpeak))
-  final <- bind_rows(final, dup_row)
+  dup_row <- qrs_flags |> dplyr::filter(is.na(rpeak))
+  final <- dplyr::bind_rows(final, dup_row)
   
   
   return(final)
 }
+# Remove waves less than ___ ms 
+# Check for QRS --> check for P, T waves. Use detect_QRS
+# signal confidence? 
+# ^ similar to confidence: compare all 12 leads, look for outliers and flag. 
+# score for each wave, each time point. if < 0.25 for a wave, remove.
 # Remove waves less than ___ ms 
 # Check for QRS --> check for P, T waves. Use detect_QRS
 # signal confidence? 
