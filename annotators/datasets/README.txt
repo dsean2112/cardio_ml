@@ -1,0 +1,1 @@
+deid_uih_ecgs_supp.RData is a list of 100 WFDB objects. Each object contains a single ecgpuwave annotation. The variable name is 'deid_uih_ecgs_supp' when loaded in R.
