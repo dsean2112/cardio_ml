@@ -1072,7 +1072,7 @@ plot_func <- function(y,
 
   # If annotations are wfdb format, change to vector format
   if (any(class(color) == "annotation_table")) {
-    color <- ann_wfdb2continuous2(color)
+    color <- ann_wfdb2continuous2(color, length = length(y))
   }
   
   
@@ -1111,14 +1111,14 @@ plot_func2 <- function(y,
                        ylim = NULL, 
                        plotly = 'yes',
                        legend = TRUE,
-                       x = 'index') {
-  #' @param x: can either be 'sec' for seconds (time is from 0 to 10 sec on standard ECG). OR index, for index by index
+                       x_units = 'index') {
+  #' @param x_units: can either be 'sec' for seconds (time is from 0 to 10 sec on standard ECG). OR index, for index by index
   library(ggplot2)
   library(plotly)
   
   # If annotations are wfdb format, change to vector format
   if (any(class(color) == "annotation_table")) {
-    color <- ann_wfdb2continuous2(color)
+    color <- ann_wfdb2continuous2(object = color, length = length(y))
   }
   
   # If signal is an array (ie dim 1 x 5000), reduce to vector 
@@ -1131,7 +1131,7 @@ plot_func2 <- function(y,
   color[color == 3] <- 'T'
   color[color == 4] <- 'V'
   
-  if (x == 'index') {
+  if (x_units == 'index') {
     x <-  seq_along(y)
   } else if (x == 'sec') {
     x <- seq_along(y) / 500
@@ -1530,6 +1530,30 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 
 
 # Predict -----------------------------------------------------------------
+#' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
+#'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
+#' 
+#' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
+#' 
+#' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
+#'  best models for each lead: 
+#'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
+#'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+#'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
+#'    
+#' @param do_predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
+#'    If true, a predictionInteger_threshold is required (default of 0.5)
+#'    If false, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
+#'        Roughly equivalent to a threshold method with a threshold value of 0.5
+#' 
+#' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+#' @param wave_gap_threhold: see above
+#' 
+#' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
+#' @param short_wave_threshold: see above
+#' 
+#' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
+
 predict_ecgs <- function(input,
                          lead_number='all',
                          model_number='best',
@@ -1543,34 +1567,8 @@ predict_ecgs <- function(input,
                          wave_gap_threshold=20,
                          do_remove_short_waves=TRUE,
                          short_wave_threshold=10) {
-  #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
-  #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
-  #' 
-  #' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
-  #' 
-  #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
-  #'  best models for each lead: 
-  #'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
-  #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
-  #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
-  #'    
-  #' @param do_predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
-  #'    If true, a predictionInteger_threshold is required (default of 0.5)
-  #'    If false, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
-  #'        Roughly equivalent to a threshold method with a threshold value of 0.5
-  #' 
-  #' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
-  #' @param wave_gap_threhold: see above
-  #' 
-  #' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
-  #' @param short_wave_threshold: see above
-  #' 
-  #' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
-  
-  # Improvements to impliment: 
-    # automatically detect if in wfdb format (ie list form) vs. matrix format --> eliminate need for 'input_class' parameter
-  
   library(keras)
+  
   load(model_log_path)
 
   lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
@@ -1581,7 +1579,13 @@ predict_ecgs <- function(input,
   
     
   if (input_class == 'wfdb') {
-    # output <- input # retain signal values for output, if in wfdb format
+    # If single ECG input, transform to list format to allow for compatability
+    if (any(class(input) == 'egm')) {
+      single_ecg_input <- TRUE
+      input <- list(input)
+    }
+    
+    # retain signal values for output and remove pre-existing annotations, if in wfdb format
     output <- lapply(input, function(x) { # remove any pre-existing annotation
       x$annotation <- NULL
       x
@@ -1630,8 +1634,17 @@ predict_ecgs <- function(input,
     }
     
     # Predict
-    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5'))
-    predictions <- model %>% predict(input_signal)
+    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5')) # keras
+    
+    predictions <- predict_ecg_raw(
+      model = model,
+      input_signal = input_signal,
+      window_size = 5000,
+      overlap_length = 500,
+      ignore = 250
+    )
+    
+    # predictions <- model %>% predict(input_signal) # keras
     
     # Convert probabilities to integer values - either use threshold, or greatest probability
     if (do_predictionInteger_threshold) {
@@ -1684,94 +1697,82 @@ predict_ecgs <- function(input,
     counter <- counter+1
   }
   
-  return(output)
-}
-
-
-predict_ecgs_raw <- function(input,
-                             lead_number='all',
-                             model_number='best',
-                             model_log_path='../models/model_log.RData',
-                             model_folder_path='../models/',
-                             input_class='wfdb',
-                             filter=TRUE) {
-  #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
-  #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
-  #' 
-  #' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
-  #' 
-  #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
-  #'  best models for each lead: 
-  #'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
-  #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
-  #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
-  #' 
-  #' @return raw ML prediction probabilities
-  
-  library(keras)
-  load(model_log_path)
-  
-  lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
-  
-  if (any(lead_number == 'all')) {
-    lead_number <- 1:12
-  }
-  
-  # Output: number_of_samples by sample_length by 4_classes (P/QRS/T) by number_of_leads:
-  output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),4,length(lead_number)))
-  
-  counter <- 1
-  for (lead in lead_number) {
-    lead_name <- lead_name_list[lead]
-    
-    # If model_number is defined as 'best', pick the best performing model for the specified lead:
-    if (model_number == 'best') {
-      best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
-      model_number <- best_models[lead]
+  # If input was a single ECG, convert output format from a list of WFDBs to a single wfdb
+  if (exists('single_ecg_input')) {
+    if (single_ecg_input) {
+      output <- output[[1]]
     }
-    
-    # Change ECG input from list to array
-    input_signal <- do.call(rbind, lapply(1:length(input), function(idx)
-      input[[idx]]$signal[[lead_name]]))
-    
-    # Filter
-    if (filter) {
-      for (i in 1:nrow(input_signal)) {
-        input_signal[i,] <- ecg_filter(input_signal[i, ])
-      }
-    }
-    
-    # Normalize from 0 to 100
-    if (model_log$normalize[model_number]) {
-      for (i in 1:nrow(input_signal)) {
-        input_signal[i, ] <- (input_signal[i, ] - min(input_signal[i, ])) / (max(input_signal[i, ]) - min(input_signal[i, ])) * 100
-      }
-    }
-    
-    # Add derivatives if needed
-    number_of_derivs <- model_log$derivs[model_number]
-    if (number_of_derivs > 0) {
-      input_old <- input_signal
-      input_signal <- array(NA, c(dim(input_old), number_of_derivs + 1))
-      for (i in 1:nrow(input_signal)) {
-        input_signal[i, , ] <- add_derivs(signal = input_old[i, ], number_of_derivs = number_of_derivs)
-      }
-    }
-    
-    # Predict
-    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5'))
-    predictions <- model %>% predict(input_signal)
-    
-    output[,,,counter] <- predictions
-    # [sample_no x time steps x num_classes x leads]
-    
-    print(paste('Finished lead',lead_name_list[lead]))
-    counter <- counter+1
   }
   
   return(output)
 }
 
+# predict_ecgs_raw --------------------------------------------------------
+# Function to predict ECGs, specifically built to handle signals > 5000 (sliding window)
+
+#' @description function which takes in a matrix of ECG signal, and outputs raw prediction. Able to handle signals > 5000 in length via windowing techniques
+#' 
+#' @param model tensor flow model from keras
+#' @param input_signal ECG signal in array format
+#' @param window_size length of each individual prediction window 
+#' @param overlap_length length that is shared between each prediction window
+#' @param ignore the length at both beginning and end of the prediction window that is left unlabeled (ie due to boundary issues). Note: this is ignored for the beginning of the first window, and end of last
+predict_ecg_raw <- function(model, input_signal, 
+                            window_size = 5000, 
+                            overlap_length = 500, 
+                            ignore = 250) {
+  
+  N <- dim(input_signal)[[2]]
+  n_samples <- dim(input_signal)[[1]]
+  n_classes <- 4
+  step_size <- window_size - overlap_length
+  
+  # Initial starts
+  starts <- seq(1, N - window_size + 1, by = step_size)
+  
+  # Force last window to align with end
+  last_start <- N - window_size + 1
+  if (tail(starts, 1) != last_start) {
+    starts <- c(starts, last_start)
+  }
+  
+  # Accumulator and counter
+  acc <- array(0, c(n_samples,N,n_classes))
+  counts <- rep(0, N)
+  
+  for (i in seq_along(starts)) {
+    start <- starts[i]
+    end <- start + window_size - 1
+    
+    # Define chunk for prediction
+    if (length(dim(input_signal)) == 2) {
+      # 2D case: [samples, time]
+      chunk <- input_signal[, start:end, drop = FALSE]
+    } else if (length(dim(input_signal)) == 3) {
+      # 3D case: [samples, time, derivs]
+      chunk <- input_signal[, start:end, , drop = FALSE]
+    }
+    
+    # Run prediction
+    pred <- predict(object = model, x = chunk)  # output shape: n_samples x 5000 x 4
+    
+    # Determine indices to keep
+    keep_start <- if (i == 1) 1 else (ignore + 1)
+    keep_end   <- if (i == length(starts)) window_size else (window_size - ignore)
+    
+    keep_idx <- keep_start:keep_end
+    global_idx <- start + keep_idx - 1
+    
+    # Add to accumulator
+    acc[,global_idx, ] <- acc[,global_idx, ] + pred[,keep_idx, ]
+    counts[global_idx] <- counts[global_idx] + 1
+  }
+  
+  # Average overlaps
+  final_pred <- acc / counts
+  
+  return(final_pred)
+}
 
 # prediction_integer threshold --------------------------------------------
 predictions2integer_threshold <- function(predictions, threshold = 0.5) {
@@ -1818,7 +1819,6 @@ predictions2integer_threshold <- function(predictions, threshold = 0.5) {
 
 
 
-# check annotations -------------------------------------------------------
 # check annotations -------------------------------------------------------
 #' @description Checks wave progression of ECG annotations. Uses a Pan-Tompkins method from EGM to check for QRS, then adjacent windows for P and T waves. Checks for missed or duplicate waves
 #'  NOTE: input can either be a wfdb format ECG and specified lead (ie 'I') OR individual signal and annotation files for a single lead (as well as fs rate)
