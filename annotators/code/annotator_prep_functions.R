@@ -468,6 +468,21 @@ ecg_filter <- function(signal, frequency = 500, low = 0.5, high = 40) {
 }
 
 
+# Resample / interpolator -------------------------------------------------
+resample_ecg <- function(signal, old_fs, new_fs) {
+  # Original time points
+  t_old <- seq(0, (length(signal) - 1) / old_fs, by = 1 / old_fs)
+  
+  # New time points
+  t_new <- seq(0, max(t_old), by = 1 / new_fs)
+  
+  # Perform cubic spline interpolation
+  signal_new <- spline(x = t_old, y = signal, xout = t_new)$y
+  
+  return(signal_new)
+}
+
+
 # Difference/Derivative functions -----------------------------------------
 add_derivs <- function(signal, number_of_derivs = 2,mask_value=0) {
   if (number_of_derivs == 0) {
