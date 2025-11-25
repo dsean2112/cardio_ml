@@ -450,6 +450,132 @@ ann_compact2continuous <- function(ann_compact) {
   return(ann_continuous)
 }
 
+
+# ann continuous2wfdb -----------------------------------------------------
+ann_continuous2wfdb <- function(annotations, Fs = 500, channel = NULL) {
+  # Not up to date, largely defunct for now. Used to convert index to index
+  # annotation (value for each time point) to wave onset/peak/offset format. 
+  # WFDB format
+  
+  # Define channel value
+  if (!exists('channel')) {
+    channel <- 0
+  }
+  
+  if (sum(is.na(annotations)) == length(annotations)) {
+    annotation_table <- data.frame(time = c(), 
+                                   sample = c(), 
+                                   type = c(), 
+                                   subtype = c(), 
+                                   channel = c(), 
+                                   number = c()
+    )
+    return(annotation_table)
+    break
+  }
+  
+  if (any(annotations == 1)) {
+    p_waves <- which(annotations == 1)
+    p_change <- ((p_waves[-1] - p_waves[1:(length(p_waves) - 1)]))
+    new_pwave <- c(1, ((which(p_change != 1) + 1)))
+    new_pwave <- c(new_pwave, length(p_waves) + 1) # account for last value
+    
+    p_on <- c()
+    p_off <- c()
+    p_max <- c()
+    
+    for (i in 1:(length(new_pwave) - 1)) {
+      p_on <- c(p_on, p_waves[new_pwave[i]])
+      p_off <- c(p_off, p_waves[new_pwave[i + 1] - 1])
+      p_max <- c(p_max, round(mean(c(p_on[i], p_off[i])))) # temporary, will need to find peak point
+    }
+  }
+  
+  if (any(annotations == 2)) {
+    qrs_waves <- which(annotations == 2)
+    qrs_change <- ((qrs_waves[-1] - qrs_waves[1:(length(qrs_waves) - 1)]))
+    new_qrswave <- c(1, ((which(qrs_change != 1) + 1)))
+    new_qrswave <- c(new_qrswave, length(qrs_waves) + 1) # account for last value
+    
+    qrs_on <- c()
+    qrs_off <- c()
+    qrs_max <- c()
+    
+    for (i in 1:(length(new_qrswave) - 1)) {
+      qrs_on <- c(qrs_on, qrs_waves[new_qrswave[i]])
+      qrs_off <- c(qrs_off, qrs_waves[new_qrswave[i + 1] - 1])
+      qrs_max <- c(qrs_max, round(mean(c(
+        qrs_on[i], qrs_off[i]
+      )))) # temporary, will need to find peak point
+    }
+  }
+  
+  if (any(annotations == 3)) {
+    t_waves <- which(annotations == 3)
+    t_change <- ((t_waves[-1] - t_waves[1:(length(t_waves) - 1)]))
+    new_twave <- c(1, ((which(t_change != 1) + 1)))
+    new_twave <- c(new_twave, length(t_waves) + 1) # account for last value
+    
+    t_on <- c()
+    t_off <- c()
+    t_max <- c()
+    
+    for (i in 1:(length(new_twave) - 1)) {
+      t_on <- c(t_on, t_waves[new_twave[i]])
+      t_off <- c(t_off, t_waves[new_twave[i + 1] - 1])
+      t_max <- c(t_max, round(mean(c(t_on[i], t_off[i])))) # temporary, will need to find peak point
+    }
+  }
+  
+  t <- (1 : length(annotations) ) / Fs
+  
+  
+  # Build Table
+  type <- c()
+  
+  sample <- c()
+  if (exists('p_on')) {
+    type <- c(type,array(c("(","p",")"),length(p_on)*3))
+    for (i in 1:length(p_on)) {
+      sample <- c(sample, p_on[i], p_max[i], p_off[i])
+    }
+  }
+  if (exists('qrs_on')) {
+    type <- c(type,array(c("(","N",")"),length(qrs_on)*3))
+    for (i in 1:length(qrs_on)) {
+      sample <- c(sample, qrs_on[i], qrs_max[i], qrs_off[i])
+    }
+  }
+  
+  if (exists('t_on')) {
+    type <- c(type,array(c("(","t",")"),length(t_on)*3))
+    for (i in 1:length(t_on)) {
+      sample <- c(sample, t_on[i], t_max[i], t_off[i])
+    }
+  }
+  
+  time <- t[sample]
+  subtype <- array(0,length(sample))
+  channel <- array(channel,length(sample))
+  number <- array(0,length(sample))
+  
+  annotation_table <- data.frame(
+    time = time,
+    sample = sample,
+    type = type,
+    subtype = subtype,
+    channel = channel,
+    number = number)
+  
+  class(annotation_table) <- c('data.frame','annotation_table')
+  
+  if (nrow(annotation_table > 0)) {
+    annotation_table <- annotation_table[order(annotation_table$sample), ]
+    row.names(annotation_table) <- NULL
+  }
+  
+  return(annotation_table)
+}
 # Filter ------------------------------------------------------------------
 ecg_filter <- function(signal, frequency = 500, low = 0.5, high = 40) {
   library(signal)
@@ -704,128 +830,6 @@ check_ann_prog_ludb_helper <- function(testing_annotations = testing_annotations
   print(output)
   return(output)
 }
-
-ann_continuous2wfdb <- function(annotations, Fs = 500) {
-  # Not up to date, largely defunct for now. Used to convert index to index
-  # annotation (value for each time point) to wave onset/peak/offset format. 
-  # WFDB format
-  
-  if (sum(is.na(annotations)) == length(annotations)) {
-    annotation_table <- data.frame(time = c(), 
-                                   sample = c(), 
-                                   type = c(), 
-                                   subtype = c(), 
-                                   channel = c(), 
-                                   number = c()
-                                   )
-    return(annotation_table)
-    break
-  }
-  
-  if (any(annotations == 1)) {
-    p_waves <- which(annotations == 1)
-    p_change <- ((p_waves[-1] - p_waves[1:(length(p_waves) - 1)]))
-    new_pwave <- c(1, ((which(p_change != 1) + 1)))
-    new_pwave <- c(new_pwave, length(p_waves) + 1) # account for last value
-    
-    p_on <- c()
-    p_off <- c()
-    p_max <- c()
-    
-    for (i in 1:(length(new_pwave) - 1)) {
-      p_on <- c(p_on, p_waves[new_pwave[i]])
-      p_off <- c(p_off, p_waves[new_pwave[i + 1] - 1])
-      p_max <- c(p_max, round(mean(c(p_on[i], p_off[i])))) # temporary, will need to find peak point
-    }
-  }
-    
-  if (any(annotations == 2)) {
-    qrs_waves <- which(annotations == 2)
-    qrs_change <- ((qrs_waves[-1] - qrs_waves[1:(length(qrs_waves) - 1)]))
-    new_qrswave <- c(1, ((which(qrs_change != 1) + 1)))
-    new_qrswave <- c(new_qrswave, length(qrs_waves) + 1) # account for last value
-    
-    qrs_on <- c()
-    qrs_off <- c()
-    qrs_max <- c()
-    
-    for (i in 1:(length(new_qrswave) - 1)) {
-      qrs_on <- c(qrs_on, qrs_waves[new_qrswave[i]])
-      qrs_off <- c(qrs_off, qrs_waves[new_qrswave[i + 1] - 1])
-      qrs_max <- c(qrs_max, round(mean(c(
-        qrs_on[i], qrs_off[i]
-      )))) # temporary, will need to find peak point
-    }
-  }
-  
-  if (any(annotations == 3)) {
-    t_waves <- which(annotations == 3)
-    t_change <- ((t_waves[-1] - t_waves[1:(length(t_waves) - 1)]))
-    new_twave <- c(1, ((which(t_change != 1) + 1)))
-    new_twave <- c(new_twave, length(t_waves) + 1) # account for last value
-    
-    t_on <- c()
-    t_off <- c()
-    t_max <- c()
-    
-    for (i in 1:(length(new_twave) - 1)) {
-      t_on <- c(t_on, t_waves[new_twave[i]])
-      t_off <- c(t_off, t_waves[new_twave[i + 1] - 1])
-      t_max <- c(t_max, round(mean(c(t_on[i], t_off[i])))) # temporary, will need to find peak point
-    }
-  }
-  
-  t <- (1 : length(annotations) ) / Fs
-  
-  
-  # Build Table
-  type <- c()
-
-  sample <- c()
-  if (exists('p_on')) {
-    type <- c(type,array(c("(","p",")"),length(p_on)*3))
-    for (i in 1:length(p_on)) {
-      sample <- c(sample, p_on[i], p_max[i], p_off[i])
-    }
-  }
-  if (exists('qrs_on')) {
-    type <- c(type,array(c("(","N",")"),length(qrs_on)*3))
-    for (i in 1:length(qrs_on)) {
-      sample <- c(sample, qrs_on[i], qrs_max[i], qrs_off[i])
-    }
-  }
-  
-  if (exists('t_on')) {
-    type <- c(type,array(c("(","t",")"),length(t_on)*3))
-    for (i in 1:length(t_on)) {
-      sample <- c(sample, t_on[i], t_max[i], t_off[i])
-    }
-  }
-  
-  time <- t[sample]
-  subtype <- array(0,length(sample))
-  channel <- array(0,length(sample))
-  number <- array(0,length(sample))
-  
-  annotation_table <- data.frame(
-    time = time,
-    sample = sample,
-    type = type,
-    subtype = subtype,
-    channel = channel,
-    number = number)
-  
-  class(annotation_table) <- c('data.frame','annotation_table')
-  
-  if (nrow(annotation_table > 0)) {
-    annotation_table <- annotation_table[order(annotation_table$sample), ]
-    row.names(annotation_table) <- NULL
-  }
-  
-  return(annotation_table)
-}
-
-
 
 # UIH relative analysis ---------------------------------------------------
 # ie- functions when we don't have an answer key
@@ -1567,7 +1571,7 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 #' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
 #' @param short_wave_threshold: see above
 #' 
-#' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
+#' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, the function will add an annotation table to the input. Leads are separated via the 'channel' column, 1 to 12.
 
 predict_ecgs <- function(input,
                          lead_number='all',
@@ -1702,7 +1706,7 @@ predict_ecgs <- function(input,
           output[[i]]$annotation <- list()
         }
         # Create dataframe for this lead
-        output[[i]]$annotation[[lead_name]] <- ann_continuous2wfdb(predictions_integer[i, ])
+        output[[i]]$annotation[[lead_name]] <- ann_continuous2wfdb(predictions_integer[i, ], channel = lead)
       }
     } else {
       output[,,counter] <- predictions_integer
@@ -1710,6 +1714,22 @@ predict_ecgs <- function(input,
     
     print(paste('Finished lead',lead_name_list[lead]))
     counter <- counter+1
+  }
+  
+  # Convert annotations from list of annotation tables to a single annotation table
+  if (input_class == 'wfdb') {
+    for (i in seq_along(output)) {  # Combine all lead-specific annotation data frames
+      df <- do.call(rbind, output[[i]]$annotation)
+      
+      # Sort by the 'sample' column
+      df <- df[order(df$sample), ]
+      
+      # Reset row numbers (row names) to 1:nrow
+      rownames(df) <- seq_len(nrow(df))
+      
+      # Save back into the list
+      output[[i]]$annotation <- df
+    }
   }
   
   # If input was a single ECG, convert output format from a list of WFDBs to a single wfdb
