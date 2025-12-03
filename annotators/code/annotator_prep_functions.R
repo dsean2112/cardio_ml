@@ -1556,7 +1556,7 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 
 
 
-# Predict (current, single-sample)-----------------------------------------------------------------
+# Predict (current/working version, single-sample)-----------------------------------------------------------------
 #' @description
 #' Latest version of the prediction function. Input is a single wfdb file. Output appends the annotation file(s) to any pre-existing annotations
 #' 
@@ -1570,16 +1570,15 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
 #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
 #'    
-#' @param do_predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
+#' @param predictionInteger_threshold: parameter is an integer from 0 to 1. This is the method used to convert raw ML output probabilities to integers representing wave values. If set to NULL, the greatest probability will be used for the wave type
 #'    If true, a predictionInteger_threshold is required (default of 0.5)
 #'    If false, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
 #'        Roughly equivalent to a threshold method with a threshold value of 0.5
 #' 
-#' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+#' @param wave_gap_threhold: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers. If set to NULL, this step will be skipped
 #' @param wave_gap_threhold: see above
 #' 
-#' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
-#' @param short_wave_threshold: see above
+#' @param short_wave_threshold: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave. If set to NULL, this step will be skipped
 #' 
 #' @return ML predictions for all requested leads, appended to the original WFDB file
 
@@ -1588,13 +1587,14 @@ predict_wfdb <- function(input,
                          model_number='best',
                          model_log_path='../models/model_log.RData',
                          model_folder_path='../models/',
+                         output_name = NULL,
+                         output_dir = NULL,
+                         output_ann_ext = '.ann',
                          filter=TRUE,
-                         do_predictionInteger_threshold = TRUE,
                          predictionInteger_threshold=0.5,
-                         do_fill_wave_gaps=TRUE,
                          wave_gap_threshold=20,
-                         do_remove_short_waves=TRUE,
                          short_wave_threshold=10) {
+  
   # Manually loading keras due to issues with calling keras::load_model_tf()
   library(keras)
   
@@ -1665,7 +1665,7 @@ predict_wfdb <- function(input,
     # predictions <- model %>% predict(input_signal) # keras
     
     # Convert probabilities to integer values - either use threshold, or greatest probability
-    if (do_predictionInteger_threshold) {
+    if (exists('predictionInteger_threshold')) {
       # Treshold method:
       predictions_integer <- predictions2integer_threshold(predictions, 
                                                            threshold = predictionInteger_threshold)
@@ -1681,12 +1681,12 @@ predict_wfdb <- function(input,
     
     
     # Fill gaps as needed
-    if (do_fill_wave_gaps) {
+    if (exists('wave_gap_threshold')) {
       predictions_integer[1, ] <- fill_wave_gaps(predictions_integer[1,], wave_gap_threshold)
     }
     
     # Remove short waves as needed
-    if (do_remove_short_waves) {
+    if (exists('short_wave_threshold')) {
       predictions_integer[1, ] <- remove_short_waves(predictions_integer[1,], max_wave_length = short_wave_threshold)
     }
     
@@ -1708,6 +1708,31 @@ predict_wfdb <- function(input,
   output$annotation <- ann[order(ann$sample), ]
   # Reset row numbers (row names) to 1:nrow
   rownames(output$annotation) <- seq_len(nrow( output$annotation))
+  
+  # Write file to disc, if requested
+  if (!is.null(output_name)) {
+    if (is.null(output_dir)) {
+      output_path <- output_name
+      output_dir <- '.'
+    } else {
+      output_path <- fs::path(output_dir,output_name)
+    }
+    
+    # Check if header and dat files exist. If not, write them
+    hea <- fs::path(output_path,ext = 'hea')
+    dat <- fs::path(output_path,ext = 'dat')
+    if (any(!file.exists(hea),!file.exists(dat))) {
+      EGM::write_wfdb(data = output,
+                      record = output_name,
+                      record_dir = output_dir)
+    }
+    
+    # Write annotation file
+    EGM::write_annotation(data = output$annotation,
+                          annotator = output_ann_ext,
+                          record = output_name,
+                          record_dir = output_dir)
+  }
   
   return(output)
 }
