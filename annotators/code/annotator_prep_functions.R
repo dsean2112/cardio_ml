@@ -554,7 +554,15 @@ ann_continuous2wfdb <- function(annotations, Fs = 500, channel = NULL) {
     }
   }
   
-  time <- t[sample]
+  # Function to convert times to correct format:
+  format_time <- function(x) {
+    hours <- floor(x / 3600)
+    minutes <- floor((x %% 3600) / 60)
+    seconds <- x %% 60
+    sprintf("%02d:%02d:%06.3f", hours, minutes, seconds)
+  }
+  
+  time <- as.character(sapply(t[sample], format_time))
   subtype <- array(0,length(sample))
   channel <- array(channel,length(sample))
   number <- array(0,length(sample))
@@ -1548,7 +1556,162 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 
 
 
-# Predict -----------------------------------------------------------------
+# Predict (current, single-sample)-----------------------------------------------------------------
+#' @description
+#' Latest version of the prediction function. Input is a single wfdb file. Output appends the annotation file(s) to any pre-existing annotations
+#' 
+#' @param input: for input_class = 'wfdb': single WFDB format
+#' 
+#' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
+#' 
+#' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
+#'  best models for each lead: 
+#'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
+#'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+#'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
+#'    
+#' @param do_predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
+#'    If true, a predictionInteger_threshold is required (default of 0.5)
+#'    If false, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
+#'        Roughly equivalent to a threshold method with a threshold value of 0.5
+#' 
+#' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+#' @param wave_gap_threhold: see above
+#' 
+#' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
+#' @param short_wave_threshold: see above
+#' 
+#' @return ML predictions for all requested leads, appended to the original WFDB file
+
+predict_wfdb <- function(input,
+                         lead_number='all',
+                         model_number='best',
+                         model_log_path='../models/model_log.RData',
+                         model_folder_path='../models/',
+                         filter=TRUE,
+                         do_predictionInteger_threshold = TRUE,
+                         predictionInteger_threshold=0.5,
+                         do_fill_wave_gaps=TRUE,
+                         wave_gap_threshold=20,
+                         do_remove_short_waves=TRUE,
+                         short_wave_threshold=10) {
+  # Manually loading keras due to issues with calling keras::load_model_tf()
+  library(keras)
+  
+  load(model_log_path)
+  
+  lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  
+  if (any(lead_number == 'all')) {
+    lead_number <- 1:12
+  }
+  
+  # Fix formatting issues relating to calling input from a list format
+  if (identical(class(input), "list")) {
+    input <- input[[1]]
+  }
+  
+  output <- input
+  
+  # REMOVE:
+  # retain signal values for output and remove pre-existing annotations, if in wfdb format
+  # output <- lapply(input, function(x) { # remove any pre-existing annotation
+  #   x$annotation <- NULL
+  #   x
+  # })
+  
+  for (lead in lead_number) {
+    lead_name <- lead_name_list[lead]
+    
+    # If model_number is defined as 'best', pick the best performing model for the specified lead:
+    if (model_number == 'best') {
+      best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
+      model_number <- best_models[lead]
+    }
+    
+    # Change ECG input from list to array
+    input_signal <- input$signal[[lead_name]]
+    
+    # Filter
+    if (filter) {
+      input_signal <- ecg_filter(input_signal)
+    }
+    
+    # Normalize from 0 to 100
+    if (model_log$normalize[model_number]) {
+      input_signal <- (input_signal - min(input_signal)) / (max(input_signal) - min(input_signal)) * 100
+    }
+    
+    # Add derivatives if needed
+    number_of_derivs <- model_log$derivs[model_number]
+    if (number_of_derivs > 0) {
+      input_old <- input_signal
+      input_signal <- array(NA, c(dim(input_old), number_of_derivs + 1))
+      input_signal[1,,] <- add_derivs(signal = input_old, number_of_derivs = number_of_derivs) # retain dimmension size using [1,,] for prediciton input
+      
+    }
+    
+    # Predict
+    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5')) # keras
+    
+    predictions <- predict_ecg_raw(
+      model = model,
+      input_signal = input_signal,
+      window_size = 5000,
+      overlap_length = 500,
+      ignore = 250
+    )
+    
+    # predictions <- model %>% predict(input_signal) # keras
+    
+    # Convert probabilities to integer values - either use threshold, or greatest probability
+    if (do_predictionInteger_threshold) {
+      # Treshold method:
+      predictions_integer <- predictions2integer_threshold(predictions, 
+                                                           threshold = predictionInteger_threshold)
+    } else {
+      # Absolute (greatest probability) method:
+      predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
+      for (i in 1:nrow(predictions)) {
+        predictions_integer[i, ] <- max.col(predictions[i, , ])
+      }
+      # convert from dimension value 1,2,3,4 to 0,1,2,3
+      predictions_integer <- predictions_integer - 1
+    }
+    
+    
+    # Fill gaps as needed
+    if (do_fill_wave_gaps) {
+      predictions_integer[1, ] <- fill_wave_gaps(predictions_integer[1,], wave_gap_threshold)
+    }
+    
+    # Remove short waves as needed
+    if (do_remove_short_waves) {
+      predictions_integer[1, ] <- remove_short_waves(predictions_integer[1,], max_wave_length = short_wave_threshold)
+    }
+    
+    # Transform to wfdb format
+    # Ensure annotation slot exists
+    if (is.null(output$annotation)) {
+      outputa$annotation <- list()
+    }
+    
+    # Add annotation to WFDB file
+    ann_indv <- ann_continuous2wfdb(predictions_integer, channel = lead)
+    output$annotation <- rbind(output$annotation,ann_indv)
+    
+    print(paste('Finished lead',lead_name_list[lead]))
+  }
+  
+  # Convert annotations from list of annotation tables to a single annotation table
+  ann <- output$annotation
+  output$annotation <- ann[order(ann$sample), ]
+  # Reset row numbers (row names) to 1:nrow
+  rownames(output$annotation) <- seq_len(nrow( output$annotation))
+  
+  return(output)
+}
+# Predict (outdated, multi-sample) -----------------------------------------------------------------
 #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
 #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
 #' 
@@ -1573,7 +1736,7 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 #' 
 #' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, the function will add an annotation table to the input. Leads are separated via the 'channel' column, 1 to 12.
 
-predict_ecgs <- function(input,
+predict_wfdb_multi <- function(input,
                          lead_number='all',
                          model_number='best',
                          model_log_path='../models/model_log.RData',

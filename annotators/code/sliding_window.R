@@ -173,5 +173,11 @@ test$signal <-  test$signal[1001:9001,]
 V5 <- resample_ecg(signal = test$signal$V5,old_fs = 360, new_fs = 500)
 test$signal <- data.frame(sample = 1:length(V5),
                            V5 = V5)
-output <- predict_ecgs(input = test, lead_number = 11)
-plot_func2(ecg_filter(output$signal$V5),output$annotation$V5)
+output <- predict_ecgs(input = test, lead_number = 11,filter = FALSE)
+plot_func2(output$signal$V5,output$annotation$V5)
+
+#  ------------
+test2 <- test
+test2 <- test2$signal[1001:9001,]
+# plot_func(test2$V5)
+plot_func(ecg_filter(test2$V5, frequency = 360))
