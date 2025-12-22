@@ -1652,7 +1652,7 @@ predict_wfdb <- function(input,
     }
     
     # Predict
-    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5')) # keras
+    model <- load_model_tf(fs::path(model_folder_path, model_log$name[model_number],ext = 'h5')) # keras
     
     predictions <- predict_ecg_raw(
       model = model,
@@ -1736,7 +1736,7 @@ predict_wfdb <- function(input,
   
   return(output)
 }
-# Predict (outdated, multi-sample) -----------------------------------------------------------------
+# Predict (multi-sample) -----------------------------------------------------------------
 #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
 #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
 #' 
@@ -1748,16 +1748,13 @@ predict_wfdb <- function(input,
 #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
 #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
 #'    
-#' @param do_predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
-#'    If true, a predictionInteger_threshold is required (default of 0.5)
-#'    If false, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
+#' @param predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
+#'    If value is not set, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
 #'        Roughly equivalent to a threshold method with a threshold value of 0.5
 #' 
-#' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
-#' @param wave_gap_threhold: see above
+#' @param wave_gap_threhold: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers. If a value isn't set, the gaps will not be filled
 #' 
-#' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
-#' @param short_wave_threshold: see above
+#' @param short_wave_threshold: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave. If not set, waves will not be removed
 #' 
 #' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, the function will add an annotation table to the input. Leads are separated via the 'channel' column, 1 to 12.
 
@@ -1768,12 +1765,10 @@ predict_wfdb_multi <- function(input,
                          model_folder_path='../models/',
                          input_class='wfdb',
                          filter=TRUE,
-                         do_predictionInteger_threshold = TRUE,
                          predictionInteger_threshold=0.5,
-                         do_fill_wave_gaps=TRUE,
                          wave_gap_threshold=20,
-                         do_remove_short_waves=TRUE,
                          short_wave_threshold=10) {
+  # Manually loading keras due to issues with calling keras::load_model_tf()
   library(keras)
   
   load(model_log_path)
@@ -1841,7 +1836,7 @@ predict_wfdb_multi <- function(input,
     }
     
     # Predict
-    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5')) # keras
+    model <- load_model_tf(fs::path(model_folder_path, model_log$name[model_number],ext = 'h5')) # keras
     
     predictions <- predict_ecg_raw(
       model = model,
@@ -1854,8 +1849,8 @@ predict_wfdb_multi <- function(input,
     # predictions <- model %>% predict(input_signal) # keras
     
     # Convert probabilities to integer values - either use threshold, or greatest probability
-    if (do_predictionInteger_threshold) {
-      # Treshold method:
+    if (exists('predictionInteger_threshold')) {
+      # Threshold method:
       predictions_integer <- predictions2integer_threshold(predictions, 
                                                            threshold = predictionInteger_threshold)
     } else {
@@ -1870,20 +1865,18 @@ predict_wfdb_multi <- function(input,
     
     
     # Fill gaps as needed
-    if (do_fill_wave_gaps) {
+    if (exists('wave_gap_threshold')) {
       for (i in 1:nrow(predictions_integer)) {
         predictions_integer[i, ] <- fill_wave_gaps(predictions_integer[i, ], wave_gap_threshold)
       }
     }
     
     # Remove short waves as needed
-    if (do_remove_short_waves) {
+    if (exists('short_wave_threshold')) {
       for (i in 1:nrow(predictions_integer)) {
         predictions_integer[i, ] <- remove_short_waves(predictions_integer[i, ], max_wave_length = short_wave_threshold)
       }
     }
-    
-    # Remove waves less than threshold
     
     # Transform to wfdb format, if input is wfdb format
     if (input_class == 'wfdb') {
