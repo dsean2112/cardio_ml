@@ -408,27 +408,101 @@ ann_wfdb2continuous3 <- function(object) {
 
 
 # ann wfdb/compact --------------------------------------------------------
+# Old function:
+# ann_wfdb2compact <- function(ann_wfdb) {
+#   library(dplyr)
+#   class(ann_wfdb) <- "data.frame"
+#   ann_wfdb <- ann_wfdb %>% mutate(idx = row_number())
+#   
+#   # Extract waves
+#   ann_compact <- ann_wfdb %>%
+#     mutate(
+#       type_lead = lead(type),
+#       type_lag = lag(type),
+#       sample_lead = lead(sample),
+#       sample_lag = lag(sample)
+#     ) %>%
+#     filter(type %in% c("p", "N", "t"), type_lag == "(", type_lead == ")") %>%
+#     transmute(
+#       type,
+#       onset = sample_lag,
+#       peak = sample,
+#       offset = sample_lead
+#     )
+#   return(ann_compact)
+# }
+
+# New function (able to handle multiple channels)
 ann_wfdb2compact <- function(ann_wfdb) {
   library(dplyr)
-  class(ann_wfdb) <- "data.frame"
-  ann_wfdb <- ann_wfdb %>% mutate(idx = row_number())
   
-  # Extract waves
+  ann_wfdb <- ann_wfdb %>%
+    mutate(idx = row_number()) %>%
+    arrange(channel, sample)   # ensure proper ordering
+  
   ann_compact <- ann_wfdb %>%
+    group_by(channel) %>%      # <-- key addition
     mutate(
-      type_lead = lead(type),
-      type_lag = lag(type),
+      type_lead   = lead(type),
+      type_lag    = lag(type),
       sample_lead = lead(sample),
-      sample_lag = lag(sample)
+      sample_lag  = lag(sample)
     ) %>%
-    filter(type %in% c("p", "N", "t"), type_lag == "(", type_lead == ")") %>%
+    filter(
+      type %in% c("p", "N", "t"),
+      type_lag == "(",
+      type_lead == ")"
+    ) %>%
     transmute(
+      channel,
       type,
-      onset = sample_lag,
-      peak = sample,
-      offset = sample_lead
-    )
+      onset  = sample_lag,
+      peak   = sample,
+      offset = sample_lead,
+      time
+    ) %>%
+    ungroup()
+  
+  ann_compact <- ann_compact[order(ann_compact$onset),]
   return(ann_compact)
+}
+
+ann_compact2wfdb <- function(compact_ann) {
+  library(dplyr)
+  library(stringr)
+  
+  # Build WFDB rows for each compact wave
+  wfdb <- compact_ann %>%
+    rowwise() %>%
+    do({
+      ch   <- .$channel
+      tp   <- .$type
+      on   <- .$onset
+      pk   <- .$peak
+      off  <- .$offset
+      
+      tibble::tibble(
+        time   = time,
+        sample = c(on, pk, off),
+        type   = c("(", tp, ")"),
+        subtype = 0L,
+        channel = ch,
+        number  = 0L
+      )
+    }) %>%
+    ungroup() %>%
+    arrange(channel, sample)
+  
+  # Ensure WFDB formatting: character integer sample
+  wfdb$sample <- as.integer(wfdb$sample)
+  wfdb <- wfdb[order(wfdb$sample),]
+  
+  wfdb <- as.data.frame(wfdb)
+  rownames(wfdb) <- seq_len(nrow(wfdb))
+  
+  class(wfdb) <- c("annotation_table", "data.table",       "data.frame" )
+  
+  return(wfdb)
 }
 
 ann_compact2continuous <- function(ann_compact) {
@@ -620,14 +694,14 @@ resample_ecg <- function(signal, old_fs, new_fs) {
   return(signal_new)
 }
 
-# Resample / interpolator (handles WFDB) ----------------------------------
+# Resample / interpolator (handles WFDB signal) ----------------------------------
 
 #' @param input Input can either be a signal table (ecg$signal) or the whole WFDB file (ecg). 
 #'    If the whole WFDB file is input, the output will be the whole WFDB file with the updated signal
 #'    
 #' @param old_fs old_fs only needs to be defined if the input is a signal table. 
 
-resample_wfdb <- function(input, old_fs = NULL, new_fs = 500) {
+resample_wfdb_signal <- function(input, old_fs = NULL, new_fs = 500) {
   # Extract signal table
   if (any(class(input) == 'egm')) {
     sig <- input$signal
@@ -645,7 +719,7 @@ resample_wfdb <- function(input, old_fs = NULL, new_fs = 500) {
   lead_cols <- setdiff(names(sig), "sample")
   
   # Number of samples expected after resampling
-  target_n <- 5000
+  target_n <- round(length(sig$sample) * new_fs / old_fs)
   
   # Resample each lead
   resampled_leads <- lapply(lead_cols, function(col) {
@@ -685,6 +759,43 @@ resample_wfdb <- function(input, old_fs = NULL, new_fs = 500) {
   }
   
   return(output)
+}
+
+
+# Resample / interpolator for WFDB annotations ----------------------------
+resample_wfdb_annotation <- function(ann, old_fs, new_fs) {
+  library(data.table)
+  ann <- as.data.table(ann)
+  
+  # 1. Compute true time in seconds from old sample index
+  ann[, time_sec := sample / old_fs]
+  
+  # 2. Convert to new sample index (integer, min = 1)
+  ann[, new_sample := pmax(1L, round(time_sec * new_fs))]
+  
+  # 3. Recompute time string from new sample index
+  ann[, new_time_sec := new_sample / new_fs]
+  
+  format_time <- function(sec) {
+    h <- floor(sec / 3600)
+    m <- floor((sec %% 3600) / 60)
+    s <- sec %% 60
+    sprintf("%02d:%02d:%06.3f", h, m, s)
+  }
+  
+  ann[, new_time := format_time(new_time_sec)]
+  
+  # 4. Return in WFDB column order
+  out <- ann[, .(
+    time   = new_time,
+    sample = new_sample,
+    type,
+    subtype,
+    channel,
+    number
+  )]
+  
+  return(out[])
 }
 
 # Difference/Derivative functions -----------------------------------------
@@ -1215,7 +1326,16 @@ plot_func2 <- function(y,
   
   # If annotations are wfdb format, change to vector format
   if (any(class(color) == "annotation_table")) {
+    # Check if there are multiple channels included in the annotation input. If so, warn user.
+    if ("channel" %in% names(color) &&
+        length(unique(color$channel)) > 1) {
+      warning("WFDB annotation input contains multiple unique channels. ",
+              "Recommend filtering for a single channel only.")
+      break
+    }
+    
     color <- ann_wfdb2continuous2(object = color, length = length(y))
+    
   }
   
   # If signal is an array (ie dim 1 x 5000), reduce to vector 
@@ -1628,7 +1748,8 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 
 # Predict (current/working version, single-sample, does write data to disc)-----------------------------------------------------------------
 #' @description
-#' Latest version of the prediction function. Input is a single wfdb file. Output appends the annotation file(s) to any pre-existing annotations
+#' Latest version of the prediction function. Input is a single wfdb file. Output appends the annotation file(s) to any pre-existing annotations.
+#' Function can handle any length of ECG, any number of leads
 #' 
 #' @param input: for input_class = 'wfdb': single WFDB format
 #' 
@@ -1681,21 +1802,16 @@ predict_wfdb <- function(input,
     input <- input[[1]]
   }
   
-  # Check sample frequency
-  if (attributes(input$header)$record_line$frequency != 500) {
-    sample_freq <- attributes(input$header)$record_line$frequency
-    warning_message <- print(paste0('Warning: ECG is sampled with frequency ',sample_freq,'. Interpolation is not currently incoporated into this function'))
-    warning(warning_message)
-  }
-  
   output <- input
   
-  # REMOVE:
-  # retain signal values for output and remove pre-existing annotations, if in wfdb format
-  # output <- lapply(input, function(x) { # remove any pre-existing annotation
-  #   x$annotation <- NULL
-  #   x
-  # })
+  # Check sample frequency and adjust signal as needed
+  if (attributes(input$header)$record_line$frequency != 500) {
+    sample_freq <- attributes(input$header)$record_line$frequency
+    message_freq <- print(paste0('ECG is sampled with frequency ',sample_freq,'. Interpolating to 500 Hz for prediction'))
+    message(message_freq)
+    
+    input <- resample_wfdb_signal(input = input, old_fs = sample_freq, new_fs = 500)
+  }
   
   for (lead in lead_number) {
     lead_name <- lead_name_list[lead]
@@ -1773,18 +1889,24 @@ predict_wfdb <- function(input,
       output$annotation <- data.frame()
     }
     
-    # Add annotation to WFDB file
+    # Convert annotation to WFDB format
     ann_indv <- ann_continuous2wfdb(predictions_integer, channel = lead)
+      # If ECG is not sampled at 500 Hz, adjust annotation table here
+        # Adjust here to avoid issues with resampling existing annotations from input
+    if (attributes(input$header)$record_line$frequency != 500) {
+      new_fs <- attributes(input$header)$record_line$frequency
+      ann_indv <- resample_wfdb_annotation(ann_indv,500,new_fs)
+    }
     output$annotation <- rbind(output$annotation,ann_indv)
     
     print(paste('Finished lead',lead_name_list[lead]))
   }
   
-  # Convert annotations from list of annotation tables to a single annotation table
+  # Correct order of annotation table (key if multiple annotation leads are present)
   ann <- output$annotation
   if (nrow(ann) > 0) { # ie if ECG has a flat signal, annotation set will be empty. If so, skip this step
-    output[[i]]$annotation <- ann[order(ann$sample), ] # correct order
-    rownames(output[[i]]$annotation) <- seq_len(nrow(output[[i]]$annotation)) # reset row names
+    output$annotation <- ann[order(ann$sample), ] # correct order
+    rownames(output$annotation) <- seq_len(nrow(output$annotation)) # reset row names
   }
   
   # Write file to disc, if requested
@@ -1873,31 +1995,26 @@ predict_wfdb_multi <- function(input,
     if (any(class(input) == 'egm')) {
       single_ecg_input <- TRUE
       input <- list(input)
-      
-      # Check sample frequency (if single ECG input)
-      if (attributes(input$header)$record_line$frequency != 500) {
-        sample_freq <- attributes(input$header)$record_line$frequency
-        warning_message <- print(paste0('Warning: ECG is sampled with frequency ',sample_freq,'. Interpolation is not currently incoporated into this function'))
-        warning(warning_message)
-      }
     }
     
-    # Check sample frequency (for multi ECG input)
-    for (i in seq_along(input)) {
-      if (attributes(input[[i]]$header)$record_line$frequency != 500) {
-        sample_freq <- attributes(input[[i]]$header)$record_line$frequency
-        warning_message <- print(paste0('Warning: ECG', input[[i]]$record_line$record_name, 'sample number',
-                                        i,' is sampled with frequency ',sample_freq,
-                                        '. Interpolation is not currently incoporated into this function'))
-        warning(warning_message)
-      }
-    }
-    
-    # retain signal values for output and remove pre-existing annotations, if in wfdb format
+    # Retain signal values for output and remove pre-existing annotations, if in wfdb format
     output <- lapply(input, function(x) { # remove any pre-existing annotation
       x$annotation <- NULL
       x
     })
+    
+    # Check sample frequency and interpolate
+    for (i in seq_along(input)) {
+      if (attributes(input[[i]]$header)$record_line$frequency != 500) {
+        sample_freq <- attributes(input[[i]]$header)$record_line$frequency
+        message_freq <- print(paste0('ECG', input[[i]]$record_line$record_name, 'sample number',
+                                        i,' is sampled with frequency ',sample_freq,'. Interpolating to 500 Hz'))
+        message(message_freq)
+        
+        input[[i]] <- resample_wfdb_signal(input = input[[i]], old_fs = sample_freq, new_fs = 500)
+      }
+    }
+    
   } else {
     output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),length(lead_number)))
   }
@@ -1992,8 +2109,17 @@ predict_wfdb_multi <- function(input,
         if (is.null(output[[i]]$annotation)) {
           output[[i]]$annotation <- data.frame()
         }
+        
         # Create dataframe for this lead
         ann_indv <- ann_continuous2wfdb(predictions_integer[i, ], channel = lead)
+        
+        # If ECG is not sampled at 500 Hz, adjust annotation table here
+          # Adjust here to avoid issues with resampling existing annotations from input
+        if (attributes(input[[i]]$header)$record_line$frequency != 500) {
+          new_fs <- attributes(input[[i]]$header)$record_line$frequency
+          ann_indv <- resample_wfdb_annotation(ann_indv,500,new_fs)
+        }
+        
         output[[i]]$annotation <- rbind(output[[i]]$annotation,ann_indv)
         
       
