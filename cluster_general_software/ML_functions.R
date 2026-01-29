@@ -1,4 +1,5 @@
 # Filter Samples ----------------------------------------------------------
+# Function has been REPLACED by the annotator_prep_functions.R equivalent.
 # filter_samples <- function(signal, frequency = 500, low = 0.5, high = 40) {
 #   # Butterworth bandpass filter
 #   library(dplR)
@@ -339,6 +340,16 @@ isoelec_find <- function(signal,annotations) {
   # Output: single mV value
   # take mean vs. median of T-P intervals?
   
+  # If input is a WFDB annotation table, convert to continuous version
+  if (any(class(annotations) == 'annotation_table')) {
+    # If annotation_prep_functions.R isn't loaded, break
+    if (!exists('ann_wfdb2continuous2')) {
+      warning('annotation_prep_functions.R is not loaded. Load and try again')
+      break
+    }
+    annotations <- ann_wfdb2continuous2(annotations,length(signal))
+  }
+  
   if (sum(annotations == 1) > 0 & sum(annotations == 3) > 0) {
   pwaves <- make_wave_table(annotations, wave_value = 1)
   twaves <- make_wave_table(annotations, wave_value = 3)
@@ -551,6 +562,11 @@ make_wave_table <- function(annotations,  wave_value) {
   # Could include time values, in addition to indices
   if (is.vector(annotations) == TRUE) {
     annotations <- matrix(annotations, nrow = 1)
+  }
+  
+  # If matrix appears transposed, flip it:
+  if (ncol(annotations) == 12 | nrow(annotations == 5000)) {
+    annotations <- t(annotations)
   }
   
   wave_classes <- c(0,"p","N","t")

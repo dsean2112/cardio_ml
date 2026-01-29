@@ -112,8 +112,14 @@ muse_dx_line <- function(muse_ids, muse_path = '/mmfs1/projects/cardio_darbar_ch
   
   library(XML)
   library(xml2)
-  muse_log <- read.csv(muse_path)
+  if (class(muse_path) == 'character') {
+    muse_log <- read.csv(muse_path)
+  } else if (class(muse_path) == 'data.frame') { # for greater efficiency, allow user to set muse_path to be the actual muse log df
+    muse_log <- muse_path
+  }
   
+  
+  muse_log <- muse_log %>% dplyr::filter(FILE_NAME %in% muse_ids)
   # FINISH CODING: 
   #   Load muse_path csv: read.csv
   #   For each muse id
@@ -121,59 +127,195 @@ muse_dx_line <- function(muse_ids, muse_path = '/mmfs1/projects/cardio_darbar_ch
   #     Complete loop completed below:
   
   base_path <- '/mmfs1/projects/cardio_darbar_chi/common'
-  xml <- read_xml(fs::path(base_path, muse_path, ext = 'xml'))
+  xml <- read_xml(fs::path(base_path, muse_log$PATH, ext = 'xml'))
   diagnosis <- xml_text(xml_find_all(xml, ".//DiagnosisStatement"))
+  
+  diagnosis <- xml_text(xml_find_all(xml, ".//DiagnosisStatement"))
+  diagnosis <- gsub("ENDSLINE|USERINSERT", "", diagnosis) # Remove extraneous text
+  diagnosis <- paste(diagnosis, collapse = " ") # Collapse into a single string
   
   return(diagnosis)
 }
   
 icd2mrn <- function(icds_path) {
-  library(arrow)
-  library(dplyr)
-  library(vroom)
-  
-  diagnosis_path <- '/mmfs1/projects/cardio_darbar_chi/common/data/backup_clinical_data/Diagnosis/'
-  demographics_path <- '/mmfs1/projects/cardio_darbar_chi/common/data/demographics-0.csv'
-  
-  # Input: path to .txt file with list of mrns
-  icds <- readLines(icds_path)
-  icds <- paste0("^", icds, collapse = "|")
-  
-  
-  # Output: dataframe of mrns
-  files <- list.files(diagnosis_path, 
-                      recursive = TRUE, 
-                      full.names = TRUE)
-  
-  recids <- c()
-  for (i in c(1:length(files))) {
-    batch <- arrow::open_dataset(files[i]) |>
-      dplyr::filter(grepl(x = ICD_CODE, pattern = icds)) |>
-      collect()
-    
-    recids <- c(recids,batch$RECORD_ID)
-    recids <- unique(recids)
-    
-    print(paste('Finished',i,'.',nrow(batch)))
-    rm(batch)
-  }
-  recids <- unique(recids)
-  
-  demographics <- vroom(demographics_path, col_select = c("RECORD_ID", "MRN"))
-  output <- demographics |> filter(RECORD_ID %in% recids)
-  return(output)
+  # OUTDATED, use icd2recid
+  # library(arrow)
+  # library(dplyr)
+  # library(vroom)
+  # 
+  # diagnosis_path <- '/mmfs1/projects/cardio_darbar_chi/common/data/Diagnosis/'
+  # demographics_path <- '/mmfs1/projects/cardio_darbar_chi/common/data/demographics-0.csv'
+  # 
+  # # Input: path to .txt file with list of mrns
+  # icds <- readLines(icds_path)
+  # icds <- paste0("^", icds, collapse = "|")
+  # 
+  # 
+  # # Output: dataframe of mrns
+  # files <- list.files(diagnosis_path, 
+  #                     recursive = TRUE, 
+  #                     full.names = TRUE)
+  # 
+  # recids <- c()
+  # for (i in c(1:length(files))) {
+  #   batch <- arrow::open_dataset(files[i]) |>
+  #     dplyr::filter(grepl(x = ICD_CODE, pattern = icds)) |>
+  #     collect()
+  #   
+  #   recids <- c(recids,batch$RECORD_ID)
+  #   recids <- unique(recids)
+  #   
+  #   print(paste('Finished',i,'.',nrow(batch)))
+  #   rm(batch)
+  # }
+  # recids <- unique(recids)
+  # 
+  # demographics <- vroom(demographics_path, col_select = c("RECORD_ID", "MRN"))
+  # output <- demographics |> filter(RECORD_ID %in% recids)
+  # return(output)
 }
 
-recid2demo <- function(ids, id_method = 'RECORD_ID', demo_path = '/home/dseaney2/cardio_darbar_chi_link/common/data/demographics-0.csv') {
+
+#' @description
+#' Input: vector of ICD codes (ICD10 only, ICD9s are converted). Optional: start and end dates.
+#' Output: dataframe of record ids
+#' 
+icd2recid <- function(icds, start_date = NULL, end_date = NULL) {
+  library(arrow)
+  library(dplyr)
+  library(lubridate)
+  
+  # Collapse ICDs into regex
+  icd_pattern <- paste0(icds, collapse = "|")
+  
+  # List all diagnosis files
+  files <- list.files(
+    '/mmfs1/projects/cardio_darbar_chi/common/data/Diagnosis/',
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  
+  # Extract year from filenames like "Diagnosis_2010.parquet"
+  file_years <- files |>
+    basename() |>
+    sub("Diagnosis_", "", x = _) |>
+    sub(".parquet", "", x = _) |>
+    as.integer()
+  
+  # If dates provided, filter files by year
+  if (!is.null(start_date)) {
+    start_date <- as.Date(start_date)
+    start_year <- year(start_date)
+  } else {
+    start_year <- min(file_years)
+  }
+  
+  if (!is.null(end_date)) {
+    end_date   <- as.Date(end_date)
+    end_year   <- year(end_date)
+  } else {
+    end_year <- max(file_years)
+  }
+  
+  keep_idx <- file_years >= start_year & file_years <= end_year
+  files <- files[keep_idx]
+  file_years <- file_years[keep_idx]
+  
+  recids <- c()
+  
+  for (i in seq_along(files)) {
+    yr <- file_years[i]
+    ds <- arrow::open_dataset(files[i])
+    
+    # Base filter: ICD codes
+    ds <- ds |> filter(grepl(icd_code, pattern = icd_pattern))
+    
+    # If date filtering needed for boundary years
+    if (!is.null(start_date)) {
+      if (yr == start_year) {
+        ds <- ds |> filter(date >= start_date)
+      }
+    }
+    if (!is.null(end_date)) {
+      if (yr == end_year) {
+        ds <- ds |> filter(date <= end_date)
+      }
+    }
+    
+    batch <- ds |> collect()
+    
+    recids <- c(recids, batch$record_id)
+    
+    message("Finished ", i, ". Rows: ", nrow(batch))
+  }
+  
+  recids <- unique(recids)
+  return(data.frame(record_id = recids))
+}
+
+icdRecid2date <- function(table,icds,name) {
+  # Input: table of recids; ICD code/s; name of new column
+  # Output: table with column for date of initial dx
+  # Note: can handle multiple ICDs for single dx
+  
+  icds <- paste0(icds, collapse = "|") 
+  
+  if (any(names(htn_recids) %in% 'recid')) {
+    recid_colname <- 'recid'
+  } else {recid_colname <- 'record_id'}
+  
+  files <- list.files(
+    '/mmfs1/projects/cardio_darbar_chi/common/data/Diagnosis/',
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  
+  all_years <- c()
+  for (i in c(1:length(files))) {
+    batch <- arrow::open_dataset(files[i]) |>
+      dplyr::filter(grepl(x = icd_code, pattern = icds) & 
+                      record_id %in% table[[recid_colname]]) |>
+      select(record_id, date) |>
+      collect()
+    
+    # recids <- c(recids, batch$record_id)
+    
+    print(paste0('Finished ', i, '. ', nrow(batch)))
+    all_years <- rbind(all_years,batch)
+    rm(batch)
+  }
+  
+  min_dates <- all_years %>%
+    group_by(record_id) %>%
+    summarize(date = min(date, na.rm = TRUE))  # Get min date per record_id
+  
+  if (recid_colname == 'recid') {
+    min_dates <- min_dates %>% rename(recid = record_id) # rename
+  }
+  
+  min_dates <- min_dates %>% rename(!!name := date)
+  
+  final_table <- table %>%
+    left_join(min_dates, by = recid_colname)  # Perform a left join on 'rec_id'
+  
+  return(final_table)
+}
+
+recid2demo <- function(ids, id_method = 'record_id', demo_path = '/home/dseaney2/cardio_darbar_chi_link/common/data/demographics-0.csv') {
   library(arrow)
   library(dplyr)
   demo = read.csv(demo_path)
   # demo = demo[,c('record_id','mrn','gender','race','ethnicity')]
-  demo = demo[,c('RECORD_ID','MRN','GENDER','RACE','ETHNICITY')]
-  demo$MRN = as.numeric(demo$MRN)
+  # demo = demo[,c('RECORD_ID','MRN','GENDER','RACE','ETHNICITY')]
+  demo$mrn = as.numeric(demo$mrn)
   
-  table = data.frame(id = ids)
-  colnames(table) = id_method
+  # If input is a vector, transform to a dataframe
+  if (!class(ids) == 'data.frame') {
+    table = data.frame(id = ids)
+    colnames(table) = id_method
+  } else {
+    table <- ids
+  }
   
   table <- left_join(table,demo, by = id_method)
   
@@ -181,23 +323,23 @@ recid2demo <- function(ids, id_method = 'RECORD_ID', demo_path = '/home/dseaney2
   genders <- c('Unknown','Male','Female')
   ethnicities <- c('Not_Hispanic','Hispanic','Declined','NA')
   
-  table$RACE <- races[table$RACE]
-  table$ETHNICITY <- ethnicities[table$ETHNICITY]
-  table$GENDER <- genders[table$GENDER + 1]
+  table$race <- races[table$race]
+  table$ethnicity <- ethnicities[table$ethnicity]
+  table$gender <- genders[table$gender + 1]
   
   race_summary <- array(NA,length(races))
   for (i in 1:length(races)) {
-    race_summary[i] <- round(sum(table$RACE == races[i]) / nrow(table),3)
+    race_summary[i] <- round(sum(table$race == races[i]) / nrow(table),3)
   }
   
   gender_summary <- array(NA,length(genders))
   for (i in 1:length(genders)) {
-    gender_summary[i] <- round(sum(table$GENDER == genders[i]) / nrow(table),3)
+    gender_summary[i] <- round(sum(table$gender == genders[i]) / nrow(table),3)
   }
   
   ethnicity_summary <- array(NA,length(ethnicities))
   for (i in 1:length(ethnicities)) {
-    ethnicity_summary[i] <- round(sum(table$ETHNICITY == ethnicities[i]) / nrow(table),3)
+    ethnicity_summary[i] <- round(sum(table$ethnicity == ethnicities[i]) / nrow(table),3)
   }
   
   summary <- data.frame(matrix(c(nrow(table),gender_summary,race_summary,ethnicity_summary), nrow = 1))

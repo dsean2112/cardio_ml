@@ -436,6 +436,11 @@ ann_wfdb2continuous3 <- function(object) {
 ann_wfdb2compact <- function(ann_wfdb) {
   library(dplyr)
   
+  # Remove 'annotation_table' class from input
+  attributes(ann_wfdb) <- list(names = names(ann_wfdb), 
+                               row.names = seq_len(nrow(ann_wfdb)), 
+                               class = "data.frame" )
+  
   ann_wfdb <- ann_wfdb %>%
     mutate(idx = row_number()) %>%
     arrange(channel, sample)   # ensure proper ordering
@@ -544,6 +549,7 @@ ann_continuous2wfdb <- function(annotations, Fs = 500, channel = NULL) {
                                    channel = c(), 
                                    number = c()
     )
+    class(annotation_table) <- c('data.frame','annotation_table')
     return(annotation_table)
     break
   }
@@ -765,6 +771,10 @@ resample_wfdb_signal <- function(input, old_fs = NULL, new_fs = 500) {
 # Resample / interpolator for WFDB annotations ----------------------------
 resample_wfdb_annotation <- function(ann, old_fs, new_fs) {
   library(data.table)
+  
+  if (nrow(ann) == 0) {
+    return(ann)
+  }
   ann <- as.data.table(ann)
   
   # 1. Compute true time in seconds from old sample index
@@ -794,6 +804,8 @@ resample_wfdb_annotation <- function(ann, old_fs, new_fs) {
     channel,
     number
   )]
+  
+  class(out) <- c('data.frame','annotation_table')
   
   return(out[])
 }
@@ -1280,16 +1292,16 @@ plot_func <- function(y,
 
   # If annotations are wfdb format, change to vector format
   if (any(class(color) == "annotation_table")) {
-    color <- ann_wfdb2continuous2(color, length = length(y))
+    color <- ann_wfdb2continuous2_plotting(color, length = length(y),use_symbols = TRUE)
+  } else {
+    color[color == 1] <- 'p'
+    color[color == 2] <- 'N'
+    color[color == 3] <- 't'
+    color[color == 4] <- 'V'
   }
   
   
   y <- c(y)
-  
-  color[color == 1] <- 'p'
-  color[color == 2] <- 'N'
-  color[color == 3] <- 't'
-  color[color == 4] <- 'V'
   
   x <- 1:length(y)
   
@@ -1334,19 +1346,52 @@ plot_func2 <- function(y,
       break
     }
     
-    color <- ann_wfdb2continuous2(object = color, length = length(y))
+    color <- ann_wfdb2continuous2_plotting(color, length = length(y),use_symbols = TRUE)
+    color[color == 'N'] <- 'QRS'
     
+    unique_colors <- unique(color)
+    base_types <- c("p", "QRS", "t", "V") # Known ECG wave types
+    special_colors <- setdiff(unique_colors, base_types) # Identify special colors
+    # Fixed color mapping
+    color_codes <- c(
+      "0"   = "darkgray",
+      "p"   = "#1A759F",
+      "QRS" = "#28B000",
+      "t"   = "#BC4B51",
+      "V"   = "red"
+    )
+    
+    # If there are special colors, assign them a palette
+    if (length(special_colors) > 0) {
+      # Use a palette with enough distinct colors (max 10)
+      palette_extra <- grDevices::rainbow(max(10, length(special_colors)))
+      
+      # Assign the first N colors to the special types
+      extra_codes <- setNames(palette_extra[seq_along(special_colors)],
+                              special_colors)
+      
+      # Add them to your main color map
+      color_codes <- c(color_codes, extra_codes)
+    }
+    
+    
+    
+    
+  } else {
+    color[color == 0] <- '0'
+    color[color == 1] <- 'p'
+    color[color == 2] <- 'QRS'
+    color[color == 3] <- 't'
+    color[color == 4] <- 'V'
+    
+    color_codes <- c("0" = "darkgray", "p" = "#1A759F", "QRS" = "#28B000", "t" = "#BC4B51", "V" = "red")
   }
   
   # If signal is an array (ie dim 1 x 5000), reduce to vector 
   y <- c(y) 
   
   # Map numeric codes to labels
-  color[color == 0] <- '0'
-  color[color == 1] <- 'P'
-  color[color == 2] <- 'QRS'
-  color[color == 3] <- 'T'
-  color[color == 4] <- 'V'
+  
   
   if (x_units == 'index') {
     x <-  seq_along(y)
@@ -1363,7 +1408,7 @@ plot_func2 <- function(y,
     geom_path(linewidth = linewidth) +
     geom_point(size = pointsize) +
     scale_color_manual(
-      values = c("0" = "darkgray", "P" = "#1A759F", "QRS" = "#28B000", "T" = "#BC4B51", "V" = "red")
+      values = color_codes
     ) +
     theme_bw() +
     coord_cartesian(ylim = ylim) +
@@ -1377,6 +1422,55 @@ plot_func2 <- function(y,
   }
   
   return(plot)
+}
+
+# Unique version of ann_wfdb2continuous2 to allow for more wave types for plotting
+ann_wfdb2continuous2_plotting <- function(object, length=5000,use_symbols=TRUE) {
+  
+  if (any(class(object) == 'egm')) {
+    length <- nrow(object$signal)
+    wfdb_ann <- object$annotation
+    # } else if (any(class(object) == 'annotation_table')) {
+    #   wfdb_ann <- object
+  } else {
+    wfdb_ann <- object
+  }
+  
+  if (nrow(object) == 0) {
+    output <- rep(NA,length)
+    return(output)
+    warning('Annotation file is empty')
+    break
+  }
+  
+  output <- rep(0,length)
+  
+  # Find wave types
+  types <- unique(wfdb_ann$type)
+  special_wave_types <- types[!types %in% c('(',')','p','N','t')]
+  wave_types <- c('p','N','t',special_wave_types)
+  
+  # Convert to continuous
+  counter_val <- 1
+  for (wave_type in wave_types) {
+    wave_peak_ind <- which(wfdb_ann$type == wave_type)
+    wave_peak_ind <- wave_peak_ind[wfdb_ann$type[wave_peak_ind - 1] == '(' & wfdb_ann$type[wave_peak_ind + 1] == ')']
+    
+    # For every wave_peak_ind, create array of integers like: wave_onset : wave_offset
+    wave_continuous <- unlist(lapply(wave_peak_ind, function(ind) {
+      wfdb_ann$sample[(ind - 1)]:wfdb_ann$sample[(ind + 1)]
+    }))
+    
+    if (use_symbols) {
+      continuous_value <- wave_type
+    } else {
+      continuous_value <- counter_val
+    }
+    output[wave_continuous] <- continuous_value
+    
+    counter_val <- counter_val + 1
+  }
+  return(output)
 }
 
 # bilstm_cnn model --------------------------------------------------------
@@ -1753,7 +1847,7 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 #' 
 #' @param input: for input_class = 'wfdb': single WFDB format
 #' 
-#' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
+#' @param lead_selection: character vector (ie c('I','II')). If set to lead_selection = 'all', all 12 leads will be predicted
 #' 
 #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
 #'  best models for each lead: 
@@ -1774,7 +1868,7 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 #' @return ML predictions for all requested leads, appended to the original WFDB file
 
 predict_wfdb <- function(input,
-                         lead_number='all',
+                         lead_selection='all',
                          model_number='best',
                          model_log_path='../models/model_log.RData',
                          model_folder_path='../models/',
@@ -1791,10 +1885,12 @@ predict_wfdb <- function(input,
   
   load(model_log_path)
   
-  lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  # The lead order of the vector containing the best models, and the input ECG lead order can vary. Thus, define both:
+  model_lead_order <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  input_lead_order <- setdiff(names(wfdb$signal),'sample') # remove first 'sample' column
   
-  if (any(lead_number == 'all')) {
-    lead_number <- 1:12
+  if (any(lead_selection == 'all')) {
+    lead_selection <- input_lead_order
   }
   
   # Fix formatting issues relating to calling input from a list format
@@ -1807,20 +1903,23 @@ predict_wfdb <- function(input,
   # Check sample frequency and adjust signal as needed
   if (attributes(input$header)$record_line$frequency != 500) {
     sample_freq <- attributes(input$header)$record_line$frequency
-    message_freq <- print(paste0('ECG is sampled with frequency ',sample_freq,'. Interpolating to 500 Hz for prediction'))
+    message_freq <- print(paste0('ECG ', attributes(input$header)$record_line$record_name, ' is sampled with frequency ',sample_freq,'. Interpolating to 500 Hz for prediction'))
     message(message_freq)
     
     input <- resample_wfdb_signal(input = input, old_fs = sample_freq, new_fs = 500)
   }
   
-  for (lead in lead_number) {
-    lead_name <- lead_name_list[lead]
-    
+  for (lead_name in lead_selection) {
+
     # If model_number is defined as 'best', pick the best performing model for the specified lead:
+    model_leads_position <- which(model_lead_order == lead_name)
     if (model_number == 'best') {
       best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
-      model_number <- best_models[lead]
+      model_number <- best_models[model_leads_position]
     }
+    
+    # Define the channel number, defined by the input ECG lead order
+    channel_number <- which(input_lead_order == lead_name)
     
     # Change ECG input from list to array
     input_signal <- input$signal[[lead_name]]
@@ -1886,11 +1985,11 @@ predict_wfdb <- function(input,
     # Transform to wfdb format
     # Ensure annotation slot exists
     if (is.null(output$annotation)) {
-      output$annotation <- data.frame()
+      output$annotation <- ann_continuous2wfdb(NA,Fs = 500) # create empty annotation table (Fs value is just a placeholder)
     }
     
     # Convert annotation to WFDB format
-    ann_indv <- ann_continuous2wfdb(predictions_integer, channel = lead)
+    ann_indv <- ann_continuous2wfdb(predictions_integer, channel = channel_number)
       # If ECG is not sampled at 500 Hz, adjust annotation table here
         # Adjust here to avoid issues with resampling existing annotations from input
     if (attributes(input$header)$record_line$frequency != 500) {
@@ -1899,10 +1998,11 @@ predict_wfdb <- function(input,
     }
     output$annotation <- rbind(output$annotation,ann_indv)
     
-    print(paste('Finished lead',lead_name_list[lead]))
+    print(paste('Finished lead',lead_name))
   }
   
   # Correct order of annotation table (key if multiple annotation leads are present)
+  class(output$annotation) <- c('data.frame','annotation_table') # force to correct class
   ann <- output$annotation
   if (nrow(ann) > 0) { # ie if ECG has a flat signal, annotation set will be empty. If so, skip this step
     output$annotation <- ann[order(ann$sample), ] # correct order
@@ -1950,7 +2050,7 @@ predict_wfdb <- function(input,
 #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
 #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
 #' 
-#' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
+#' @param lead_selection: character vector (ie c('I','II')). If set to lead_selection = 'all', all 12 leads will be predicted
 #' 
 #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
 #'  best models for each lead: 
@@ -1969,7 +2069,7 @@ predict_wfdb <- function(input,
 #' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, the function will add an annotation table to the input. Leads are separated via the 'channel' column, 1 to 12.
 
 predict_wfdb_multi <- function(input,
-                         lead_number='all',
+                         lead_selection='all',
                          model_number='best',
                          model_log_path='../models/model_log.RData',
                          model_folder_path='../models/',
@@ -1983,10 +2083,10 @@ predict_wfdb_multi <- function(input,
   
   load(model_log_path)
 
-  lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  model_lead_order <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
   
-  if (any(lead_number == 'all')) {
-    lead_number <- 1:12
+  if (any(lead_selection == 'all')) {
+    lead_selection <- model_lead_order
   }
   
     
@@ -2007,7 +2107,7 @@ predict_wfdb_multi <- function(input,
     for (i in seq_along(input)) {
       if (attributes(input[[i]]$header)$record_line$frequency != 500) {
         sample_freq <- attributes(input[[i]]$header)$record_line$frequency
-        message_freq <- print(paste0('ECG', input[[i]]$record_line$record_name, 'sample number',
+        message_freq <- print(paste0('ECG ', attributes(input[[i]]$header)$record_line$record_name, ' sample number',
                                         i,' is sampled with frequency ',sample_freq,'. Interpolating to 500 Hz'))
         message(message_freq)
         
@@ -2016,17 +2116,23 @@ predict_wfdb_multi <- function(input,
     }
     
   } else {
-    output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),length(lead_number)))
+    output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),length(lead_selection)))
   }
     
   counter <- 1
-  for (lead in lead_number) {
-    lead_name <- lead_name_list[lead]
+  for (lead_name in lead_selection) {
+    
+    
+    # Define the channel number, defined by the input ECG lead order
+    input_lead_order <- setdiff(names(wfdb$signal),'sample') # remove first 'sample' column
+    channel_number <- which(input_lead_order == lead_name)
+    
     
     # If model_number is defined as 'best', pick the best performing model for the specified lead:
+    model_leads_position <- which(model_lead_order == lead_name)
     if (model_number == 'best') {
       best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
-      model_number <- best_models[lead]
+      model_number <- best_models[model_leads_position]
     }
     
     # Change ECG input from list to array
@@ -2069,8 +2175,6 @@ predict_wfdb_multi <- function(input,
       ignore = 250
     )
     
-    # predictions <- model %>% predict(input_signal) # keras
-    
     # Convert probabilities to integer values - either use threshold, or greatest probability
     if (exists('predictionInteger_threshold')) {
       # Threshold method:
@@ -2111,7 +2215,7 @@ predict_wfdb_multi <- function(input,
         }
         
         # Create dataframe for this lead
-        ann_indv <- ann_continuous2wfdb(predictions_integer[i, ], channel = lead)
+        ann_indv <- ann_continuous2wfdb(predictions_integer[i, ], channel = channel_number)
         
         # If ECG is not sampled at 500 Hz, adjust annotation table here
           # Adjust here to avoid issues with resampling existing annotations from input
@@ -2128,7 +2232,7 @@ predict_wfdb_multi <- function(input,
       output[,,counter] <- predictions_integer
     }
     
-    print(paste('Finished lead',lead_name_list[lead]))
+    print(paste('Finished lead',lead_name))
     counter <- counter+1
   }
   
@@ -2136,6 +2240,7 @@ predict_wfdb_multi <- function(input,
     # And run checks for: empty annotation table, empty ECG signal
   if (input_class == 'wfdb') {
     for (i in seq_along(output)) {
+      class(output[[i]]$annotation) <- c('data.frame','annotation_table') # force to correct class
       ann <- output[[i]]$annotation
       
       if (nrow(ann) > 0) { # ie if ECG has a flat signal, annotation set will be empty. If so, skip this step
@@ -2305,9 +2410,21 @@ validate_ecg_waves <- function(wfdb = NULL,
                                pr_window = NULL,   # ms before R
                                rt_window = NULL) { # ms after R
   
+  lead_names <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  
   if (exists('wfdb')) {
+    
+    if (class(lead) == 'numeric') {
+      lead_number <- lead
+      lead <- lead_names[lead]
+      warning('lead input should be name- ie I, II. Not 1, 2')
+      break
+    } else {
+      lead_number <- which(lead_names == lead)
+    }
+    
     signal <- wfdb$signal[[lead]]
-    ann_wfdb <- wfdb$annotation[[lead]]
+    ann_wfdb <- wfdb$annotation[wfdb$annotation$channel == lead_number,]
     fs <-  attributes(wfdb$header)$record_line$frequency
   }
   
@@ -2471,6 +2588,13 @@ validate_ecg_waves <- function(wfdb = NULL,
     }
     if(any(p_candidates$peak %in% pr_range)) {p_in_range <- TRUE} else {p_in_range <- FALSE}
     
+    # If the p-wave is missing AND the search range is prior to the terminal boundary, don't count it
+    p_searchRange_before_termini <- min(pr_range) < terminal_boundary
+    if (p_searchRange_before_termini & p_flag == 'missing') {
+      p_flag <- 'terminal'
+      p_flag_idx <- NA
+      p_in_range <- NA
+    }
     
     t_flag <- NA
     t_flag_idx <- NA
@@ -2482,6 +2606,14 @@ validate_ecg_waves <- function(wfdb = NULL,
       t_flag_idx <- paste(t_candidates$peak, collapse = ";")
     }
     if(any(t_candidates$peak %in% rt_range)) {t_in_range <- TRUE} else {t_in_range <- FALSE}
+    
+    # If the t-wave is missing AND the search range is beyond the terminal boundary, don't count it
+    t_searchRange_beyond_termini <- max(rt_range) > (sig_length - terminal_boundary)
+    if (t_searchRange_beyond_termini & t_flag == 'missing') {
+      t_flag <- 'terminal'
+      t_flag_idx <- NA
+      t_in_range <- NA
+    }
     
     return(data.frame(rpeak = r,
                       p_flag = p_flag,

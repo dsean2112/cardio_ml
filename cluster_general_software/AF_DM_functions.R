@@ -1,5 +1,5 @@
 # HRV ---------------------------------------------------------------------
-HRV_RMSSD <- function(Rpeaks, Hz = 500, annotations = 0) {
+HRV_RMSSD <- function(Rpeaks, fs = 500, annotations = 0, remove_outliers) {
   # Find RMSSD for 10 sec ECG
   # Input should be index values, not time values
   
@@ -32,8 +32,8 @@ HRV_RMSSD <- function(Rpeaks, Hz = 500, annotations = 0) {
         stop()
       }
       
-      Rpeaks_indv <- Rpeaks_indv / Hz
-      interval <- (Rpeaks_indv[-1] - Rpeaks_indv[1: (length(Rpeaks_indv) - 1)]) * 1000 # convert to ms
+      Rpeaks_indv <- Rpeaks_indv / fs * 1000 # convert to ms
+      interval <- diff(Rpeaks) 
       RMSSD[i] <- sqrt( 1/(length(interval)- 1) * sum((interval[1: (length(interval) - 1)] - interval[-1])^2))
     }
     
@@ -55,8 +55,22 @@ HRV_RMSSD <- function(Rpeaks, Hz = 500, annotations = 0) {
       stop()
     }
     
-    Rpeaks = Rpeaks / Hz
-    interval <- (Rpeaks[-1] - Rpeaks[1:(length(Rpeaks) - 1)]) * 1000 # convert to ms
+    Rpeaks = Rpeaks / fs * 1000 # convert to ms
+    interval <- diff(Rpeaks) 
+    
+    # if (!is.null(pvcs)& (!length(pvcs) == 0)) {
+    #   interval <- interval[-c(pvcs-1,pvcs)] # remove the RR intervals  containing the PVC
+    # }
+    
+    if (remove_outliers) {
+      median_interval <- median(interval)
+      interval <- interval[interval < (1.2*median_interval) & interval > (0.8*median_interval)]
+    }
+    
+    if (length(interval) < 3) {
+      message('Too few workable intervals, returning NA')
+      return(NA)
+    }
     RMSSD <- sqrt(1 / (length(interval) - 1) * sum((interval[1:(length(interval) - 1)] - interval[-1]) ^2))
   }
   
@@ -65,16 +79,41 @@ HRV_RMSSD <- function(Rpeaks, Hz = 500, annotations = 0) {
 }
 
 # Wave Axis ---------------------------------------------------------------
-find_wave_axis <- function(signal12, ann12, wave_value) {
+#' @description
+#' Finds the 3D spatial vector for each beat
+#' 
+
+find_wave_axis_byWave <- function(signal12, ann12, wave_value, method='AUC|amplitude') {
   # Input: filtered signal**
   # Output: 3D spatial vectors for each beat
   # Find wave axis for each beat. Input: 12 lead signal and annotations.
   
+  # Method: calculates the 3D vector using integration (area under the curve) OR amplitude
+  
   # Rpeaks <- peak_isolation(signal12[,1],ann12[,1])
   
-  # waves <- c()
+  # If 'sample' column for signal still exists, remove
+  if (ncol(signal12) == 13) {
+    signal12 <- signal12[-1,]
+  }
   
+  # If input is a WFDB annotation table, convert to continuous version
+  if (any(class(ann12) == 'annotation_table')) {
+    # If annotation_prep_functions.R isn't loaded, break
+    if (!exists('ann_wfdb2continuous2')) {
+      message('annotation_prep_functions.R is not loaded. Load and try again')
+      break
+    }
+    
+    ann_wfdb <- ann12
+    ann12 <- array(NA,c(5000,12))
+    for (lead in 1:12) {
+      ann <- ann12 |> dplyr::filter(channel == lead)
+      ann12[,lead] <- ann_wfdb2continuous2(object = ann, length = nrow(signal)) # convert to continuous
+    }
+  }
   
+  # If input is a single annotation lead, then replicate across all leads for simplicity (ie if just using  ecgpuwave)
   if (length(dim(ann12)) < 2) {
     ann12 <- array(rep(ann12, 12), c(5000,12))
   }
@@ -83,7 +122,7 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   if (sum(ann12 == wave_value, na.rm=TRUE) < 24) {
     output <- list(array(c(NA,NA,NA),c(1,3)),array(c(NA,NA,NA),c(1,3)))
     names(output) <- c('every_wave','mean_wave')
-    warning('No waves of value',wave_value,'were found. Exiting.')
+    message('No waves of value',wave_value,'were found. Exiting.')
     return(output)
     break
     
@@ -93,7 +132,7 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   if (any(is.na(ann12[,c(1:2,7:12)]))) {
     output <- list(array(c(NA,NA,NA),c(1,3)),array(c(NA,NA,NA),c(1,3)))
     names(output) <- c('every_wave','mean_wave')
-    warning('No waves of value ',wave_value,' were found. Exiting.')
+    message('No waves of value ',wave_value,' were found. Exiting.')
     return(output)
     break
     
@@ -107,14 +146,25 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   terminal_window <- 75
   
   for (i in 1:12) {
-    wave_table <- find_wave_AUC(signal = signal12[,i], annotations = ann12[,i], wave_value = 1)
+    # Find AUC (set arbitrary frequency value, as this will be averaged out when finding the vector)
+    wave_table <- find_wave_AUC(signal = signal12[,i], annotations = ann12[,i], wave_value = wave_value, fs = 500)
+    
+    # Calculate amplitude
+    amplitude <- wave_character(signal = signal12[,i], annotations = ann12[,i], wave_value = wave_value, Hz = 500)
+    amplitude <- amplitude %>% dplyr::select(-wave_type,-wave_off,-sample,-duration)
+    wave_table <- dplyr::left_join(wave_table,amplitude,by='wave_on')
     
     remove_rows <- which(wave_table$wave_on < terminal_window | wave_table$wave_off > (5000 - terminal_window))
     if (length(remove_rows) > 0) {
     wave_table <- wave_table[-remove_rows,]
     }
     
-    AUC_full[i] <- list(round(wave_table$AUC,2))
+    if (method == 'AUC') {
+      AUC_full[i] <- list(round(wave_table$AUC,2))
+    } else if (method == 'amplitude') {
+      AUC_full[i] <- list(round(wave_table$amplitude,2))
+    }
+    
     wave_on_full[i] <- list(wave_table$wave_on)
     
   }
@@ -135,23 +185,23 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   if (length(unlist(wave_on_full[2])) == 0 | sum(is.na(unlist(wave_on_full[2]))) > 0) {
     output <- list(array(c(NA,NA,NA),c(1,3)),array(c(NA,NA,NA),c(1,3)))
     names(output) <- c('every_wave','mean_wave')
-    warning('ECG has no p-waves.')
+    message('ECG has no p-waves.')
     return(output)
     break
   }
   
-  for (i in 1:length(unlist(AUC_full[2]))) {
+  for (wave_row in 1:length(unlist(AUC_full[2]))) {
     # Use most accurate lead- lead 2
     
     
-    index <- unlist(wave_on_full[2])[[i]] # Find wave onset index
+    index <- unlist(wave_on_full[2])[[wave_row]] # Find wave onset index
     
     # Find AUC for each lead which is present within 50 indices of lead 2 onset
     
-    for (j in 1:12) {
+    for (lead in 1:12) {
       # Isolate lead of interest
-      wave_on_indv <- unlist(wave_on_full[j])
-      AUC_indv <- unlist(AUC_full[j])
+      wave_on_indv <- unlist(wave_on_full[lead])
+      AUC_indv <- unlist(AUC_full[lead])
       
       # Find which index within the lead corresponds to lead 2 index:
       wave_on_index <- which(wave_on_indv < index + window & wave_on_indv > index - window)
@@ -163,11 +213,11 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
       
       # Print warning message if there is no corresponding wave in the lead:
       if (length(wave_on_index) == 0) {
-        text <- paste("Warning: Lead #",j,"Beat #",i,"has no wave!")
-        # warning(text)
+        text <- paste("Warning: Lead #",lead,"Beat #",wave_row,"has no wave!")
+        # message(text)
       } else {
       # Array of AUC for each lead
-      AUC_12lead[i,j] <- AUC_indv[wave_on_index]
+      AUC_12lead[wave_row,lead] <- AUC_indv[wave_on_index]
       }
     }
   }
@@ -178,6 +228,7 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   AUC_12lead_adjusted[, c(3:6)] <- 0
   
   for (i in 1:nrow(AUC_12lead_adjusted)) {
+    any(is.na(AUC_12lead_adjusted[i,]))
     wave_3D_vector[i, ] <- kors(AUC_12lead_adjusted[i, ])
   }
   
@@ -188,6 +239,35 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   
   output <- list(wave_3D_vector,mean_vector)
   names(output) <- c('every_wave','mean_wave')
+  
+  # Warnings:
+  any_row_has_NA <- any(apply(AUC_12lead_adjusted, 1, function(x) any(is.na(x))))
+  all_rows_have_NA <- all(apply(AUC_12lead_adjusted, 1, function(x) any(is.na(x))))
+  
+  if (all_rows_have_NA) {
+    
+    # Helper function to find if any leads do not contain any waves of interest:
+    detect_all_na_cols <- function(mat) {
+      # mat can be a matrix or data frame
+      
+      all_na <- apply(mat, 2, function(col) all(is.na(col)))
+      na_cols <- which(all_na)
+      
+      return(na_cols)
+    }
+    empty_leads <- detect_all_na_cols(AUC_12lead_adjusted)
+    
+    if (length(empty_leads) > 0) {
+      message("Wave is missing in at least one lead for all beats ",
+                                 'Lead/s: ',paste(empty_leads, collapse = ", "),' did not contain any waves of interest.')
+    } else {
+      message("Wave is missing in at least one lead for all beats")
+    }
+    
+  } else if (any_row_has_NA) {
+    # message("Some waves of interest are not present in all leads. However, still able to calculate wave axis."))
+  }
+  
   
   return(output)
   # For every p-wave in lead II:
@@ -202,14 +282,119 @@ find_wave_axis <- function(signal12, ann12, wave_value) {
   # As a check, can compare AUC to QR, RS intervals
 }
 
+#' @description
+#' Finds the 3D spatial vector averaged over the whole ECG (not for each beat)
+#' 
+find_wave_axis_simple <- function(signal12, ann12, wave_value, method='AUC|amplitude') {
+  # Input: filtered signal**
+  # Output: 3D spatial vectors for each beat
+  # Find wave axis for each beat. Input: 12 lead signal and annotations.
+  
+  # Method: calculates the 3D vector using integration (area under the curve) OR amplitude
+  
+  # Rpeaks <- peak_isolation(signal12[,1],ann12[,1])
+  
+  # If 'sample' column for signal still exists, remove
+  if (ncol(signal12) == 13) {
+    signal12 <- signal12[-1,]
+  }
+  
+  # If input is a WFDB annotation table, convert to continuous version
+  if (any(class(ann12) == 'annotation_table')) {
+    # If annotation_prep_functions.R isn't loaded, break
+    if (!exists('ann_wfdb2continuous2')) {
+      message('annotation_prep_functions.R is not loaded. Load and try again')
+      break
+    }
+    
+    ann_wfdb <- ann12
+    ann12 <- array(NA,c(5000,12))
+    for (lead in 1:12) {
+      ann <- ann12 |> dplyr::filter(channel == lead)
+      ann12[,lead] <- ann_wfdb2continuous2(object = ann, length = nrow(signal)) # convert to continuous
+    }
+  }
+  
+  # If input is a single annotation lead, then replicate across all leads for simplicity (ie if just using  ecgpuwave)
+  if (length(dim(ann12)) < 2) {
+    ann12 <- array(rep(ann12, 12), c(5000,12))
+  }
+  
+  # If there are very few values with the specified wave value, stop the function:
+  if (sum(ann12 == wave_value, na.rm=TRUE) < 24) {
+    output <-   data.frame(X=NA,Y=NA,Z=NA) 
+    message('No waves of value',wave_value,'were found. Exiting.')
+    return(output)
+    break
+    
+  }
+  
+  # If any leads used for the Kors transformation (I-II,V1-V6) are NA, break
+  if (any(is.na(ann12[,c(1:2,7:12)]))) {
+    output <-   data.frame(X=NA,Y=NA,Z=NA) 
+    message('No waves of value ',wave_value,' were found. Exiting.')
+    return(output)
+    break
+    
+  }
+  
+  # Lists of AUC and wave onset values for all 12 leads
+  AUC_full <- array(0,12)
+  wave_on_full <- array(0,12)
+  
+  # Remove waves within specified value of beginning/end of the ECG:
+  terminal_window <- 75
+  
+  for (i in 1:12) {
+    # Find AUC (set arbitrary frequency value, as this will be averaged out when finding the vector)
+    wave_table <- find_wave_AUC(signal = signal12[,i], annotations = ann12[,i], wave_value = wave_value, fs = 500)
+    
+    # Calculate amplitude
+    amplitude <- wave_character(signal = signal12[,i], annotations = ann12[,i], wave_value = wave_value, Hz = 500)
+    amplitude <- amplitude %>% dplyr::select(-wave_type,-wave_off,-sample,-duration)
+    wave_table <- dplyr::left_join(wave_table,amplitude,by='wave_on')
+    
+    remove_rows <- which(wave_table$wave_on < terminal_window | wave_table$wave_off > (5000 - terminal_window))
+    if (length(remove_rows) > 0) {
+      wave_table <- wave_table[-remove_rows,]
+    }
+    
+    if (method == 'AUC') {
+      AUC_full[i] <- list(round(wave_table$AUC,2))
+    } else if (method == 'amplitude') {
+      AUC_full[i] <- list(round(wave_table$amplitude,2))
+    }
+    
+    wave_on_full[i] <- list(wave_table$wave_on)
+    
+  }
+  
+  median_AUC <- unlist(lapply(AUC_full,median,na.rm=TRUE))
+  median_AUC[c(3:6)] <- 0 #   set rows 3 to 6 equal to zero- to remove NA values from unnecessary leads
+  spatial_vector <- as.data.frame(kors(median_AUC))
+  names(spatial_vector) <- c('X','Y','Z')
+  
+
+  # Message if a lead is missing wave of interest
+  empty_leads <- which(is.na(median_AUC))
+  if (length(empty_leads) > 0) {
+    message("Wave is missing in at least one lead for all beats ",
+            'Lead/s: ',paste(empty_leads, collapse = ", "),' did not contain any waves of interest.')
+  }
+ 
+  return(spatial_vector)
+}
+
 # Wave AUC ----------------------------------------------------------------
 
-find_wave_AUC <- function(signal, annotations, wave_value) {
+find_wave_AUC <- function(signal, annotations, wave_value, fs) {
   # NOTE: use filtered signal as input
   # Wave_value: 1,2 or 3 for P, QRS or T.
   
   # Finds the average AUC of a given wave type, for a single sample
   # baseline for the AUC is the median of the T-P interval
+  
+  # fs = sampling rate
   
   # Currently, AUC does not use time values for x, but this can be adjusted.
   
@@ -217,8 +402,18 @@ find_wave_AUC <- function(signal, annotations, wave_value) {
   isoelec <- isoelec_find(signal, annotations)
   library(DescTools)
   
+  # If input is a WFDB annotation table, convert to continuous version
+  if (any(class(annotations) == 'annotation_table')) {
+    # If annotation_prep_functions.R isn't loaded, break
+    if (!exists('ann_wfdb2continuous2')) {
+      warning('annotation_prep_functions.R is not loaded. Load and try again')
+      break
+    }
+    annotations <- ann_wfdb2continuous2(annotations,length(signal))
+  }
+  
   if (sum(annotations == wave_value) == 0) {
-    warning('No waves of specified value in ECG.')
+    # message('No waves of specified value in ECG.')
     wave_table <- make_wave_table(annotations, wave_value)
     wave_table$AUC = NA
     
@@ -233,7 +428,7 @@ find_wave_AUC <- function(signal, annotations, wave_value) {
     integral_indv <- array(0, length(wave_table$wave_type))
     for (i in 1:length(wave_table$wave_type)) {
       y <- signal[wave_table$wave_on[i]:wave_table$wave_off[i]] - c(isoelec)
-      x <- 1:length(y)
+      x <- 1:length(y) / fs
       integral_indv[i] <- AUC(x = x, y = y)
     }
     wave_table$AUC <- integral_indv
@@ -249,9 +444,9 @@ find_wave_AUC <- function(signal, annotations, wave_value) {
   # Error message if there are multiple p waves
 }
 # P Amplitude / Duration --------------------------------------------------
-wave_character <- function(signal, annotations, wave_value, Hz = 500) {
+wave_character <- function(signal, annotations, wave_value, Hz) {
   # Uses make_wave_table. For each wave type specified (p/QRS/t), find onset,
-  # offset, duration and amplitude of the wave. Output in dataframe format
+  # offset, duration (in ms) and amplitude of the wave. Output in dataframe format
   
   wave_table <- make_wave_table(annotations, wave_value)
   
@@ -652,6 +847,10 @@ find_geh_RToff_interval <- function(leads12, ann12, skip_leads) {
         interval <- combined$wave_off[t_ind[j]] - combined$peak[t_ind[j] - 1]
         RToff_indv <- c(RToff_indv, interval)
       }
+    }
+    
+    if (is.null(RToff_indv)) {
+      RToff_indv <- NA
     }
     
     Rtoff_interval[i] <- list(RToff_indv)
