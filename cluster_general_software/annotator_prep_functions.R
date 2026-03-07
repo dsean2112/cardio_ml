@@ -408,30 +408,6 @@ ann_wfdb2continuous3 <- function(object) {
 
 
 # ann wfdb/compact --------------------------------------------------------
-# Old function:
-# ann_wfdb2compact <- function(ann_wfdb) {
-#   library(dplyr)
-#   class(ann_wfdb) <- "data.frame"
-#   ann_wfdb <- ann_wfdb %>% mutate(idx = row_number())
-#   
-#   # Extract waves
-#   ann_compact <- ann_wfdb %>%
-#     mutate(
-#       type_lead = lead(type),
-#       type_lag = lag(type),
-#       sample_lead = lead(sample),
-#       sample_lag = lag(sample)
-#     ) %>%
-#     filter(type %in% c("p", "N", "t"), type_lag == "(", type_lead == ")") %>%
-#     transmute(
-#       type,
-#       onset = sample_lag,
-#       peak = sample,
-#       offset = sample_lead
-#     )
-#   return(ann_compact)
-# }
-
 # New function (able to handle multiple channels)
 ann_wfdb2compact <- function(ann_wfdb) {
   library(dplyr)
@@ -447,13 +423,13 @@ ann_wfdb2compact <- function(ann_wfdb) {
   
   ann_compact <- ann_wfdb %>%
     group_by(channel) %>%      # <-- key addition
-    mutate(
+    dplyr::mutate(
       type_lead   = lead(type),
       type_lag    = lag(type),
       sample_lead = lead(sample),
       sample_lag  = lag(sample)
     ) %>%
-    filter(
+    dplyr::filter(
       type %in% c("p", "N", "t"),
       type_lag == "(",
       type_lead == ")"
@@ -472,43 +448,58 @@ ann_wfdb2compact <- function(ann_wfdb) {
   return(ann_compact)
 }
 
-ann_compact2wfdb <- function(compact_ann) {
+ann_compact2wfdb <- function(ann_compact, fs) {
   library(dplyr)
-  library(stringr)
+  library(tidyr)
+  library(purrr)
   
-  # Build WFDB rows for each compact wave
-  wfdb <- compact_ann %>%
-    rowwise() %>%
-    do({
-      ch   <- .$channel
-      tp   <- .$type
-      on   <- .$onset
-      pk   <- .$peak
-      off  <- .$offset
+  # Helper inside the function
+  format_wfdb_time <- function(seconds) {
+    h <- floor(seconds / 3600)
+    m <- floor((seconds %% 3600) / 60)
+    s <- seconds %% 60
+    sprintf("%02d:%02d:%06.3f", h, m, s)
+  }
+  
+  wfdb <- ann_compact %>%
+    mutate(
+      # Compute onset/offset times from sample indices
+      onset_time  = format_wfdb_time(onset  / fs),
+      offset_time = format_wfdb_time(offset / fs),
       
-      tibble::tibble(
-        time   = time,
-        sample = c(on, pk, off),
-        type   = c("(", tp, ")"),
-        subtype = 0L,
-        channel = ch,
-        number  = 0L
-      )
-    }) %>%
-    ungroup() %>%
-    arrange(channel, sample)
+      # Build the 3‑element time vector
+      time_list = pmap(
+        list(onset_time, time, offset_time),
+        ~ c(..1, ..2, ..3)
+      ),
+      
+      sample_list = pmap(
+        list(onset, peak, offset),
+        ~ c(..1, ..2, ..3)
+      ),
+      
+      type_list = map(type, ~ c("(", .x, ")"))
+    ) %>%
+    select(channel, sample_list, type_list, time_list) %>%
+    unnest(c(sample_list, type_list, time_list)) %>%
+    rename(
+      sample = sample_list,
+      type   = type_list,
+      time   = time_list
+    ) %>%
+    mutate(
+      subtype = 0L,
+      number  = 0L
+    ) %>%
+    arrange(sample)
   
-  # Ensure WFDB formatting: character integer sample
-  wfdb$sample <- as.integer(wfdb$sample)
-  wfdb <- wfdb[order(wfdb$sample),]
-  
-  wfdb <- as.data.frame(wfdb)
+  class(wfdb) <- c("annotation_table", "data.table", "data.frame")
   rownames(wfdb) <- seq_len(nrow(wfdb))
   
-  class(wfdb) <- c("annotation_table", "data.table",       "data.frame" )
-  
-  return(wfdb)
+  wfdb
 }
+
+
 
 ann_compact2continuous <- function(ann_compact) {
   # Assuming your dataframe is called wave_table
@@ -529,7 +520,30 @@ ann_compact2continuous <- function(ann_compact) {
   return(ann_continuous)
 }
 
-
+#' @description
+#' Function to convert a wfdb file to 12 lead matricies for both signal and annotation data
+#' 
+ann_wfdb2matrix <- function(wfdb) { 
+  leadname_order <- setdiff(names(wfdb$signal),'sample') # remove sample row
+  standard_leadname_order <-c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+ 
+  signal12 <- sapply(standard_leadname_order, function(i) wfdb$signal[[i]])
+  
+  # Carefully convert to standard 12 lead order from original lead order, using channel column
+  ann12 <- array(NA,c(nrow(signal12),12))
+  for (lead in 1:12) {
+    standard_leadname <- standard_leadname_order[lead]
+    original_lead_number <- which(leadname_order == standard_leadname)
+    
+    
+    ann <- wfdb$annotation |> dplyr::filter(channel == original_lead_number)
+    ann12[,lead] <- ann_wfdb2continuous2(object = ann, length=nrow(signal12)) # convert to continuous
+  }
+  
+  return(list(signal12 = signal12,
+              ann12 = ann12,
+              lead_order = standard_leadname_order))
+}
 # ann continuous2wfdb -----------------------------------------------------
 ann_continuous2wfdb <- function(annotations, Fs = 500, channel = NULL) {
   # Not up to date, largely defunct for now. Used to convert index to index
@@ -808,6 +822,161 @@ resample_wfdb_annotation <- function(ann, old_fs, new_fs) {
   class(out) <- c('data.frame','annotation_table')
   
   return(out[])
+}
+
+# Rpeak isolation functions -----------------------------------------------
+
+#' @description
+#' This function takes a list of vectors of Rpeaks (each element is are the Rpeaks from a single lead).
+#' The function then groups Rpeaks across leads at similar time points. If the Rpeak is present in less than
+#' 'min_leads', those Rpeaks are dropped. 
+#' Helpful for PVCs (lower slope than sinus QRS, and can be missed by Pan Tompkins)
+#' 
+reconcile_rpeaks <- function(all_rpeaks, ref_lead = "I", tol = 75, min_leads = 4) {
+  # Function to find Rpeaks using all 12 leads (check for missed Rpeaks)
+  
+  # 1. --- Choose reference lead (switch if collisions exist) ---
+  ref <- all_rpeaks[[ref_lead]]
+  if (any(diff(ref) < tol)) { # if there are Rpeaks in the lead within 75 indices of each other, assume it's a bad lead and move to the next
+    # find next lead without collisions
+    for (nm in names(all_rpeaks)) {
+      if (nm == ref_lead) next
+      if (length(all_rpeaks[[nm]]) > 1 && all(diff(all_rpeaks[[nm]]) >= tol)) {
+        ref_lead <- nm
+        ref <- all_rpeaks[[nm]]
+        message("Reference lead switched to: ", ref_lead)
+        break
+      }
+    }
+  }
+  
+  # --- Step 1.5: Remove reference R-peaks not supported by other leads ---
+  other_leads <- setdiff(names(all_rpeaks), ref_lead)
+  
+  keep_ref <- sapply(ref, function(r) {
+    # Count how many other leads have a peak within tol
+    hits <- sapply(other_leads, function(lead) {
+      any(abs(all_rpeaks[[lead]] - r) <= tol)
+    })
+    sum(hits) >= (min_leads - 1)
+  })
+  
+  ref <- ref[keep_ref]
+  
+  # If everything was removed, keep the original reference (fallback)
+  # if (length(ref) == 0) {
+  #   warning("All reference peaks removed; reverting to original reference lead.")
+  #   ref <- all_rpeaks[[ref_lead]]
+  # }
+  
+  
+  # 2. --- Collect all candidate peaks from non-reference leads ---
+  candidates <- unlist(all_rpeaks[other_leads])
+  
+  # Remove candidates that are near an existing reference R-peaks
+  far_from_ref <- function(x) all(abs(x - ref) > tol)
+  candidates <- candidates[sapply(candidates, far_from_ref)]
+  
+  # If candidates is empty (length of 0) --> all Rpeaks were matched
+  # If candidates has 1 to 3 --> not enough non-matched Rpeaks are present to add to the master set
+  #   (a new Rpeak is only added if it is present in at least 4 leads)
+  
+  if (length(candidates) < 3) return(sort(ref))
+  
+  # 3. --- Cluster candidates across leads (within ±tol) ---
+  # Sort for clustering
+  candidates <- sort(candidates)
+  
+  clusters <- list()
+  current_cluster <- c(candidates[1])
+  
+  # For each candidate (aside from the first one)
+  for (i in 2:length(candidates)) {
+    # Check if the next candidate near the current cluster of Rpeaks. If so, add to the current cluster
+    if (abs(candidates[i] - tail(current_cluster, 1)) <= tol) {
+      current_cluster <- c(current_cluster, candidates[i])
+    } else {
+      # If the next candidate is not near the current cluster, create a new cluster, and the candidate it there
+      clusters <- append(clusters, list(current_cluster))
+      current_cluster <- c(candidates[i])
+    }
+  }
+  clusters <- append(clusters, list(current_cluster))
+  
+  # 4. --- For each cluster, check if it appears in >= min_leads ---
+  new_peaks <- c()
+  
+  for (cl in clusters) {
+    # For each lead, check if it has a peak within the cluster range
+    lead_hits <- sapply(other_leads, function(lead) {
+      any(abs(all_rpeaks[[lead]] - median(cl)) <= tol)
+    })
+    
+    if (sum(lead_hits) >= min_leads) {
+      # Add median of cluster as new R-peak
+      new_peaks <- c(new_peaks, round(median(cl)))
+    }
+  }
+  
+  # 5. --- Add new peaks to reference lead and return sorted ---
+  ref_final <- sort(unique(c(ref, new_peaks)))
+  return(ref_final)
+}
+
+#' @description
+#' Input is a vector of Rpeaks (rpeaks). The function uses a single ECG lead ('signal'), scans across
+#' a window of 'win_sec' and looks for the furthest point from the isoelectric line. Isoelectric line
+#' is simply the median value of the signal.
+#' The function produces precise Rpeaks, adjusting for small discrepencies in the Pan Tompkins max slope points.
+#' 
+refine_rpeaks <- function(signal, rpeaks, fs, win_sec = 0.04,
+                          baseline_method = c("median", "mode", "hp_filter")) {
+  
+  baseline_method <- match.arg(baseline_method)
+  
+  # --- Compute isoelectric baseline ---
+  baseline <- switch(
+    baseline_method,
+    median = median(signal, na.rm = TRUE),
+    mode   = {
+      d <- density(signal)
+      d$x[which.max(d$y)]
+    },
+    hp_filter = {
+      # High-pass filter at 0.5 Hz to remove drift
+      # (simple Butterworth)
+      library(signal)
+      bf <- butter(2, 0.5/(fs/2), type = "high")
+      signal_hp <- filtfilt(bf, signal)
+      median(signal_hp)
+    }
+  )
+  
+  # --- Window in samples ---
+  w <- round(win_sec * fs)
+  n <- length(signal)
+  
+  refined <- numeric(length(rpeaks))
+  
+  for (i in seq_along(rpeaks)) {
+    r0 <- rpeaks[i]
+    
+    lo <- max(1, r0 - w)
+    hi <- min(n, r0 + w)
+    
+    seg <- signal[lo:hi]
+    
+    # absolute deviation from baseline
+    dev <- abs(seg - baseline)
+    
+    # index of max deviation
+    idx <- which.max(dev)
+    
+    # convert back to global index
+    refined[i] <- lo + idx - 1
+  }
+  
+  return(refined)
 }
 
 # Difference/Derivative functions -----------------------------------------

@@ -260,7 +260,7 @@ icdRecid2date <- function(table,icds,name) {
   
   icds <- paste0(icds, collapse = "|") 
   
-  if (any(names(htn_recids) %in% 'recid')) {
+  if (any(names(table) %in% 'recid')) {
     recid_colname <- 'recid'
   } else {recid_colname <- 'record_id'}
   

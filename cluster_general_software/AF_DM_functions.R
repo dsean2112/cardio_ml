@@ -80,22 +80,25 @@ HRV_RMSSD <- function(Rpeaks, fs = 500, annotations = 0, remove_outliers) {
 
 # Wave Axis ---------------------------------------------------------------
 #' @description
-#' Finds the 3D spatial vector for each beat
-#' 
-
-find_wave_axis_byWave <- function(signal12, ann12, wave_value, method='AUC|amplitude') {
+#' Finds the 3D spatial vector for each beat. User can either input a wfdb file, or input signal and annotations separately
+#' It is recommended to input a wfdb file to ensure proper annotation / signal lead order
+find_wave_axis_byWave <- function(wfdb, signal12, ann12, wave_value, method='AUC|amplitude') {
   # Input: filtered signal**
   # Output: 3D spatial vectors for each beat
   # Find wave axis for each beat. Input: 12 lead signal and annotations.
   
   # Method: calculates the 3D vector using integration (area under the curve) OR amplitude
   
-  # Rpeaks <- peak_isolation(signal12[,1],ann12[,1])
-  
-  # If 'sample' column for signal still exists, remove
-  if (ncol(signal12) == 13) {
-    signal12 <- signal12[-1,]
-  }
+  if (!is.null(wfdb)) {
+    output <- ann_wfdb2matrix(wfdb)
+    signal12 <- wfdb$signal12
+    ann12 <- wfdb$ann12
+  } else {
+    # If 'sample' column for signal still exists, remove
+    if (ncol(signal12) == 13) {
+      signal12 <- signal12[-1,]
+    }
+   }
   
   # If input is a WFDB annotation table, convert to continuous version
   if (any(class(ann12) == 'annotation_table')) {
@@ -109,7 +112,7 @@ find_wave_axis_byWave <- function(signal12, ann12, wave_value, method='AUC|ampli
     ann12 <- array(NA,c(5000,12))
     for (lead in 1:12) {
       ann <- ann12 |> dplyr::filter(channel == lead)
-      ann12[,lead] <- ann_wfdb2continuous2(object = ann, length = nrow(signal)) # convert to continuous
+      ann12[,lead] <- ann_wfdb2continuous2(object = ann, length = nrow(signal12)) # convert to continuous
     }
   }
   
@@ -503,13 +506,8 @@ wave_character <- function(signal, annotations, wave_value, Hz) {
   return(wave_table)
 }
   
-
-
-
-
-
 # GEH ---------------------------------------------------------------------
-geh <- function(XYZ_M, origin_point, GEH_Ronset, GEH_Rpeak, GEH_Roffset, GEH_Tpeak, GEH_Toffset, fs = 500, amp_r = 1) {
+geh <- function(XYZ_M, origin_point, GEH_Ronset, GEH_Rpeak, GEH_Roffset, GEH_Tpeak, GEH_Toffset, fs, amp_r = 1) {
   # Translated from MATLAB using Dr. Tereshchenko's code:
   # https://github.com/Tereshchenkolab/Global-Electrical-Heterogeneity/blob/master/GEH_analysis_git.m
   # **Difficult to check for accuracy. Unsure if results seem correct**
@@ -775,8 +773,23 @@ find_geh_QRS_intervals <- function(leads12, ann12, skip_leads) {
   # RS_median <- round(median(unlist(RS_interval), na.rm = TRUE))
   
   # Weight each lead evenly to account for any rogue annotations
-  QR_median <- median(sapply(QR_interval, median, na.rm = TRUE),na.rm=TRUE) 
-  RS_median <- median(sapply(RS_interval, median, na.rm = TRUE),na.rm=TRUE) 
+  QR_median <- median(sapply(QR_interval, function(x) {
+    if (is.null(x))
+      return(NA_real_)
+    median(x, na.rm = TRUE)
+  }),na.rm = TRUE)
+
+    RS_median <- median(sapply(RS_interval, function(x) {
+    if (is.null(x))
+      return(NA_real_)
+    median(x, na.rm = TRUE)
+  }),na.rm = TRUE)
+    
+    # median(sapply(QR_interval, median, na.rm = TRUE),na.rm=TRUE) 
+    # median(sapply(RS_interval, median, na.rm = TRUE),na.rm=TRUE) 
+    
+    
+    
   
   return(data.frame(QR = QR_median, RS = RS_median))
   
@@ -863,7 +876,13 @@ find_geh_RToff_interval <- function(leads12, ann12, skip_leads) {
   # }
   
   # Weight each lead evenly to account for any rogue annotations
-  overall_median <- median(sapply(Rtoff_interval, median, na.rm = TRUE),na.rm=TRUE) # weight each lead evenly to account for any rogue annotations
+  overall_median <- median(sapply(Rtoff_interval, function(x) {
+    if (is.null(x))
+      return(NA_real_)
+    median(x, na.rm = TRUE)
+  }),na.rm = TRUE)
+  
+  
   return(round(overall_median))
 }
 
@@ -935,8 +954,12 @@ find_geh_RTpeak_interval <- function(leads12, ann12, skip_leads) {
   }
   
   # Weight each lead evenly to account for any rogue annotations
-  Rt_interval_median <- median(sapply(Rt_interval, median, na.rm = TRUE),na.rm=TRUE) 
-  
+  Rt_interval_median <- median(sapply(Rt_interval, function(x) {
+    if (is.null(x))
+      return(NA_real_)
+    median(x, na.rm = TRUE)
+  }),na.rm = TRUE)
+
   return(round(Rt_interval_median))
   
 }
@@ -1455,6 +1478,9 @@ gradient <- function(data) {
 # Kors function -----------------------------------------------------------
 kors <- function(leads12) {
   # Transforms 12 lead into 3 perpendicular leads
+  
+  # Lead order: c(I,II,__,__,__,__,V1,V2,V3,V4,V5,V6)
+  
 korsMatrix <- matrix(c(0.38, -0.07, 0, 0, 0, 0, -0.13, 0.05, -0.01, 0.14, 0.06,0.54,  
                       -0.07, 0.93, 0, 0, 0, 0, 0.06, -0.02, -0.05, 0.06, -0.17, 0.13,  
                       0.11, -0.23, 0, 0, 0, 0, -0.43, -0.06,-0.14,-0.20,-0.11,0.31), 
